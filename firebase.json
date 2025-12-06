@@ -1,0 +1,9 @@
+{
+  "hosting": {
+    "source": ".",
+    "site": "sk-snooker-table-booking",
+    "frameworksBackend": {
+      "region": "asia-east1"
+    }
+  }
+}

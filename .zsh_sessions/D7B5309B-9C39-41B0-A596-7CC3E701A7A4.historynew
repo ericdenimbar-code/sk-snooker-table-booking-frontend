@@ -1,0 +1,6 @@
+diskutil list
+mount /dev/disk6
+touch /Volumes/boot/network-config\
+open -e /Volumes/boot/network-config
+touch /Volumes/boot/network-config
+open -e /Volumes/boot/network-config
