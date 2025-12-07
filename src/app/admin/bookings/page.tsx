@@ -19,19 +19,19 @@ export default async function BookingsPage() {
                     <Terminal className="h-4 w-4" />
                     <AlertTitle>後端連線錯誤</AlertTitle>
                     <AlertDescription>
-                        無法連接至 Firebase 資料庫，因此無法載入預訂資料。請前往「連線狀態」頁面檢查您的設定。
+                        無法連接至 Firebase 資料庫，因此無法載入預訂資料。
                     </AlertDescription>
                 </Alert>
             </div>
         )
     }
 
-  const [resResult, tempAccessResult] = await Promise.all([
+  const [resResult, tempResult] = await Promise.all([
     getAllReservations(),
-    getAllTemporaryAccess()
+    getAllTemporaryAccess(),
   ]);
 
-  if (!resResult.success || !resResult.reservations) {
+  if (!resResult.success || !tempResult.success) {
     return (
         <div className="flex flex-col gap-4 h-full">
             <div className="flex items-center justify-between">
@@ -39,18 +39,13 @@ export default async function BookingsPage() {
             </div>
             <Alert variant="destructive">
                 <Terminal className="h-4 w-4" />
-                <AlertTitle>無法載入預訂資料</AlertTitle>
+                <AlertTitle>無法載入資料</AlertTitle>
                 <AlertDescription>
-                    從資料庫讀取預訂資料時發生錯誤：{resResult.error || '未知錯誤'}
+                    從資料庫讀取資料時發生錯誤：{resResult.error || tempResult.error}
                 </AlertDescription>
             </Alert>
         </div>
     );
-  }
-  
-  // It's okay if temp access fails, we can still show bookings
-  if (!tempAccessResult.success) {
-     console.warn("Could not load temporary access codes:", tempAccessResult.error);
   }
 
   return (
@@ -61,8 +56,8 @@ export default async function BookingsPage() {
         <Card className="flex-1">
             <CardContent className="h-full p-2 sm:p-4 md:p-6">
                 <BookingsCalendar
-                  initialReservations={resResult.reservations}
-                  initialTempAccess={tempAccessResult.accessCodes || []}
+                  initialReservations={resResult.reservations || []}
+                  initialTempAccess={tempResult.accessCodes || []}
                 />
             </CardContent>
         </Card>

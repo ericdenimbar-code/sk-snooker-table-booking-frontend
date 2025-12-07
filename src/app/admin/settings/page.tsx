@@ -1,4 +1,3 @@
-
 'use server';
 
 import { getRoomSettings, getPaymentInfo } from './actions';
@@ -27,11 +26,11 @@ export default async function AdminSettingsPage() {
     const [room1Settings, room2Settings, paymentInfo] = await Promise.all([
         getRoomSettings('1'),
         getRoomSettings('2'),
-        getPaymentInfo(),
+        getPaymentInfo()
     ]);
 
 
-    if (!room1Settings || !room2Settings) {
+    if (!room1Settings || !room2Settings || !paymentInfo) {
         return (
             <div className="flex flex-col gap-6">
                 <h1 className="text-lg font-semibold md:text-2xl">價目及內容設定</h1>
@@ -39,8 +38,7 @@ export default async function AdminSettingsPage() {
                     <Terminal className="h-4 w-4" />
                     <AlertTitle>資料讀取錯誤</AlertTitle>
                     <AlertDescription>
-                        從 Firestore 讀取房間設定時發生錯誤。這可能是因為 Firestore 權限問題或資料庫尚未建立。
-                        請檢查伺服器日誌以獲得更多資訊。
+                        從 Firestore 讀取網站設定時發生錯誤。請檢查 Firestore 權限或前往「價目及內容設定」儲存一次設定以自動建立。
                     </AlertDescription>
                 </Alert>
             </div>

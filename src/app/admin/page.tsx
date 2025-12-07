@@ -1,7 +1,6 @@
-
 'use server';
 
-import { getRoomSettings } from './settings/actions';
+import { getRoomSettings, getHASettings } from './settings/actions';
 import { DashboardForm } from './dashboard-form';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Terminal } from 'lucide-react';
@@ -24,12 +23,13 @@ export default async function AdminDashboard() {
         )
     }
 
-    const [room1Settings, room2Settings] = await Promise.all([
+    const [room1Settings, room2Settings, haSettings] = await Promise.all([
         getRoomSettings('1'),
-        getRoomSettings('2')
+        getRoomSettings('2'),
+        getHASettings(),
     ]);
 
-    if (!room1Settings || !room2Settings) {
+    if (!room1Settings || !room2Settings || !haSettings) {
          return (
             <div className="flex flex-col gap-6">
                 <h1 className="text-lg font-semibold md:text-2xl">管理員儀表板</h1>
@@ -55,6 +55,7 @@ export default async function AdminDashboard() {
             <DashboardForm 
               initialRoom1Settings={room1Settings}
               initialRoom2Settings={room2Settings}
+              initialHaSettings={haSettings}
             />
         </div>
     );
