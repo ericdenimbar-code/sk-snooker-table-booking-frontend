@@ -36,14 +36,20 @@ env:
   # --- Firebase Admin SDK (後台管理 Firebase 資料庫用) ---
   # 請確保這個 Project ID 與你的 Admin SDK 初始化代碼使用的相匹配
   - variable: SERVICE_ACCOUNT_PROJECT_ID
-    value: "sk-snooker-table-booking"
+    value: "sk-snooker-table-booking" 
     availability:
       - BUILD
       - RUNTIME
   - variable: SERVICE_ACCOUNT_CLIENT_EMAIL
-    secret: firebase-admin-client-email
+    secret: "firebase-adminsdk-fbsvc@sk-snooker-table-booking.iam.gserviceaccount.com"
+    availability:
+      - BUILD
+      - RUNTIME
   - variable: SERVICE_ACCOUNT_PRIVATE_KEY
-    secret: firebase-admin-private-key
+    secret: "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDPnX03upbcdmnu\n0m2qw9KoXLb3pjtqp6xLowtJQHMF5tiE9qEFiiD82CMO+cijP9U1Rye8mD7nHBbu\nbcjK6shfyqniGX3C65FXvldnZR3Un4onM2+MFCc2KIb0xpzUEU/+rEmjg9M5rBXO\nR3IKzn0fo/aWFMf6fjX7lPXatC/V4TzxfPj4lBX5GwY4K1bYzZahwfc7wWKnTdIE\njqkFtle11Nkv7DkHqBHBqHChwo9g/KA0CiTqjxNjebZRrLLSneHzhH0+rth2SNuW\nkhX2pzn6oVqBrX7jdhaVg1k9e7VIBfO8vTuR2/LT2T/ybCh+pLDM+kl8G6/pXhB3\nMCDZaR8zAgMBAAECggEAWFsq9jOnjo2qiaPuXjVWiqZii8SoFrzjG5F49STDjuhu\njy+y2XuujEyjpvTwyWEaKMFujNmyM4MF01TPlmQTAIlsgTfeCL1eLpxn8C3dYya+\nke5W86OECI142eVIywvPIpBKCpfIpguxgAdx5l14bKXIBJk1fkqGSNpdQ0VZ8khT\n16VbyOQ/bZo90xduNgXcYX1CLCLaBxThrxNwBlTTWydti0FI/1kEu0CNI+Rw8XW4\nxSreXuZDXP9aLL19sUbcaqRLwynj127+PIYAeTqHjeWt+rqwlTa/V50R0WFhgC6A\ngOGkw3ZOmhppRAA+hj24Uzj7mid6levnD2qlnsu/cQKBgQDv74XsVq3U/g7HQ9El\nY0JcEcXduUFbx2ZG6oihYIplIkyYGrpvEv40GJCSd+S+kBf77bXpzbudJf2yNBWR\nXF+JGqVLVwI4By52PIvPZX6CULYy7qJXhTzaZJrQ5CrPPJFpqNTkmsKWwKPa/1Dw\nmk0x43NK6A//Ba9320bgMevCWwKBgQDdg/8KOa95G+22yX7CBuUz5521zJSMdd11\nT+Q+GD64fDYggsnUc0EliRpvKa10iQ4uj3LwAZ/BqIJnHW/4i75v49VvNF1XjZPZ\nmliLGfdD4+p5/DSoD9qP4yS/1qgwJcLTkTQAh40QefZ2aab8K+655PQccbU0GlFS\nz+a/GCv+CQKBgQDN7J3dTDtfPTkDznGXDAytJlfSxyeQFJ/0J2BiWJAO4pQoS3BM\n2lkv7xFNk/bPkq3y+36QjpEB+9Qz+L22Bzi7XBIXijKOUaOPuMEpm+sq/wiQx/yu\n7txed8/jjqArQslujIdDOIvfhLBcyZn3FgdA1Pxjgq4P6xpA3QKEcnPsVwKBgQCD\nFV9RL721D1/mcOp/6xCrXH6pXHzzebQpfbN1Q2eqSGbHal4BSIreqXlpGuK4OXqY\n9u5vNKbTNOKmHndqP1fcYpilC/nIm9FITdvjxOPb2v2gXizS3z7ZMvNGSsKQa2gV\nRrHdNlm1zFaaz/6u71h/zQrf4jH2uTQyqzDDGIy/8QKBgFOBjRBV0RP6O30NMZ20\nAopCMlEZh5IV73Zi+EtkPJZUJ+yfSxEIX5e56vyJ8TFBC2wQfRzKhhPYGNSg26HI\nzrDIRN+scS2p/XFAhcBnEsceBrJ8RSbAWDD+zWt32ryOf8AbgSBjJVumEenb6Q6L\nnsD8KerDPRJvHDL7FELeJC3a\n-----END PRIVATE KEY-----\n"
+    availability:
+      - BUILD
+      - RUNTIME
 
   # --- Google Calendar API (後台管理 Google 日曆用) ---
   # 請注意，如果 GOOGLE_SERVICE_ACCOUNT_EMAIL 和 GOOGLE_PRIVATE_KEY 與 Admin SDK 的值相同，
@@ -54,61 +60,7 @@ env:
       - BUILD
       - RUNTIME
   - variable: GOOGLE_PRIVATE_KEY
-    secret: "-----BEGIN PRIVATE KEY-----
-
-      MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC8f7dsjQchLr4z
-
-      VEDR3qyYWxVcSArzZQaWjdsZl7GYZEO1BhMxUheJPS7NgcDsCIa+dNHmZp6r+u5E
-
-      o6olitjamLGblfK4cdX0i51MR9GmuVPOElxZpMhlRISWRWC0Q2TPIRR4kVfCbPwu
-
-      QKa36X1/Iv1VjroGQLCs6mNjHjyWSYFf7UYGEeKioE0foppU6nlIN8wnqQyKB3iM
-
-      ni7+/x515T3zVvzlGA/qwxeACZkuxxbMDeYO61R4aQvlBpKEJrFU2RRt0cv6qt+I
-
-      4LzRN5XVKEMdjnTQrOoLGHU02xryxuqCJRVIwZ628tSQa6TBVwSnl22i+3GRFA82
-
-      tXJmn25dAgMBAAECggEADNOGRuXiwA8xmdsIDRp2ipMaD+fcDOXz2I8/AyMMuSv2
-
-      D82Mb/JKz90V//MDY7GMf6MB0bMWZWlDSMWNM0BF02az9nxcd3tRfcd5P4KcjAMi
-
-      JiHJib+vc3VB2LAlrXvE0ojznw+ewIf7cedBdj62T3jGnbQtnsrMlXuJIephti/H
-
-      RF5mQzDLjg5aJO3BF5TlH5P0Tq64tUVCMvUc19VAROAaxmUUVEGZzxjdZof/N2os
-
-      G892s3ngHCUQllppt+zHBvnofavAwrQaeBF5shiwIdudHYULVj1DQGItSW33kTmv
-
-      msQXxNYwuhn6A7U/jCPWbcRI0LNNVmL1vfh6EgYuqQKBgQD6FBjVIqm2Nik0vRsJ
-
-      Jc9OtWeotzNTPjGPcA/frjbqoOuCtQk+TsGmwKlLtMkrWDJ4GSH23U1c6iBMam9w
-
-      yYH+8PMr3Ewt48FlzdpZSOoUuvi1XqusED30MY6hjgth95wxF9f01ciIRn3CSdJK
-
-      WBTjz/gxgFnGdkSrMSGfyPoXxQKBgQDA9leDCbj4A+UUYQYPt7S1KM1v9ZCjsowo
-
-      wOXdyZuk8IrwBiT7hPsY2JU9U4bJKHaOgG2ohSnH2YjB4pUZahewl13njy2d/JvE
-
-      CJgTj5cq85NEByResiIrgwL4BuVAD+tQaC4k8fpXl+hrJRxyFV16hQ8e1vLR7Lgu
-
-      detO26ZNuQKBgEFtJJoOeYw8W0d6+inIhJY5C6euVnU+3kSCswR4VdHIzBTkPEja
-
-      3fs8iI5P/Bmk939IRASMHYNjlZOofQNrFOGYNGaTOjL/VUfHNYsKcoN97ze0TwGz
-
-      NiI/HOvTd9LnryuA63UYwWA14Q0Ft0jQBpcbf/mjdNlhc9G+BugA8r1pAoGAWLot
-
-      XUTAN9LaqDdA6UNIpbCAXoXlH1B/YFHqoMQOfJZa3KmGodzw9OjKHuvkY2TmtvnY
-
-      8o9gudOOLdD5TDlbcUj41fwhNq8sFMT64Ku7D/X2dmZuU9jHG4jfeZr6GS34vv1Y
-
-      koZt3Y8tQO9MmCy40hiS7lRaTSrzOfHg5F7dpokCgYAXMFi8YHUp1Ug1RTaZzmm5
-
-      6bqYD/vs8hKkcbPaTubddZhPYedEmHo2EyUO0QYP/FdMJcZb+abxX7u2nMBXmnMR
-
-      bliGy45hxreE+UNCz2E/4ExD60ZpKJ8MOtLPK3lB0t15V+hLNHxSyJznVl0GZZ38
-
-      LLfDBGP3kbNnXo3imtiLkA==
-
-      -----END PRIVATE KEY-----\n"
+    secret: "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC8f7dsjQchLr4z\nVEDR3qyYWxVcSArzZQaWjdsZl7GYZEO1BhMxUheJPS7NgcDsCIa+dNHmZp6r+u5E\no6olitjamLGblfK4cdX0i51MR9GmuVPOElxZpMhlRISWRWC0Q2TPIRR4kVfCbPwu\nQKa36X1/Iv1VjroGQLCs6mNjHjyWSYFf7UYGEeKioE0foppU6nlIN8wnqQyKB3iM\nni7+/x515T3zVvzlGA/qwxeACZkuxxbMDeYO61R4aQvlBpKEJrFU2RRt0cv6qt+I\n4LzRN5XVKEMdjnTQrOoLGHU02xryxuqCJRVIwZ628tSQa6TBVwSnl22i+3GRFA82\ntXJmn25dAgMBAAECggEADNOGRuXiwA8xmdsIDRp2ipMaD+fcDOXz2I8/AyMMuSv2\nD82Mb/JKz90V//MDY7GMf6MB0bMWZWlDSMWNM0BF02az9nxcd3tRfcd5P4KcjAMi\nJiHJib+vc3VB2LAlrXvE0ojznw+ewIf7cedBdj62T3jGnbQtnsrMlXuJIephti/H\nRF5mQzDLjg5aJO3BF5TlH5P0Tq64tUVCMvUc19VAROAaxmUUVEGZzxjdZof/N2os\nG892s3ngHCUQllppt+zHBvnofavAwrQaeBF5shiwIdudHYULVj1DQGItSW33kTmv\nmsQXxNYwuhn6A7U/jCPWbcRI0LNNVmL1vfh6EgYuqQKBgQD6FBjVIqm2Nik0vRsJ\nJc9OtWeotzNTPjGPcA/frjbqoOuCtQk+TsGmwKlLtMkrWDJ4GSH23U1c6iBMam9w\nyYH+8PMr3Ewt48FlzdpZSOoUuvi1XqusED30MY6hjgth95wxF9f01ciIRn3CSdJK\nWBTjz/gxgFnGdkSrMSGfyPoXxQKBgQDA9leDCbj4A+UUYQYPt7S1KM1v9ZCjsowo\nwOXdyZuk8IrwBiT7hPsY2JU9U4bJKHaOgG2ohSnH2YjB4pUZahewl13njy2d/JvE\nCJgTj5cq85NEByResiIrgwL4BuVAD+tQaC4k8fpXl+hrJRxyFV16hQ8e1vLR7Lgu\ndetO26ZNuQKBgEFtJJoOeYw8W0d6+inIhJY5C6euVnU+3kSCswR4VdHIzBTkPEja\n3fs8iI5P/Bmk939IRASMHYNjlZOofQNrFOGYNGaTOjL/VUfHNYsKcoN97ze0TwGz\nNiI/HOvTd9LnryuA63UYwWA14Q0Ft0jQBpcbf/mjdNlhc9G+BugA8r1pAoGAWLot\nXUTAN9LaqDdA6UNIpbCAXoXlH1B/YFHqoMQOfJZa3KmGodzw9OjKHuvkY2TmtvnY\n8o9gudOOLdD5TDlbcUj41fwhNq8sFMT64Ku7D/X2dmZuU9jHG4jfeZr6GS34vv1Y\nkoZt3Y8tQO9MmCy40hiS7lRaTSrzOfHg5F7dpokCgYAXMFi8YHUp1Ug1RTaZzmm5\n6bqYD/vs8hKkcbPaTubddZhPYedEmHo2EyUO0QYP/FdMJcZb+abxX7u2nMBXmnMR\nbliGy45hxreE+UNCz2E/4ExD60ZpKJ8MOtLPK3lB0t15V+hLNHxSyJznVl0GZZ38\nLLfDBGP3kbNnXo3imtiLkA==\n-----END PRIVATE KEY-----\n"
     availability:
       - BUILD
       - RUNTIME
