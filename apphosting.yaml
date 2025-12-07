@@ -1,7 +1,7 @@
 # apphosting.yaml
 env:
   - variable: NEXT_PUBLIC_FIREBASE_API_KEY
-    value: "AIzaSyC-8D30L1mwjMwftUO_hcvYkNSAYvjKr5M" 
+    value: "AIzaSyC-8D30L1mwjMwftUO_hcvYkNSAYvjKr5M"
     availability:
       - BUILD
       - RUNTIME
@@ -16,27 +16,156 @@ env:
       - BUILD
       - RUNTIME
   - variable: NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
-    value: "sk-snooker-table-booking.firebasestorage.app" 
+    value: "sk-snooker-table-booking.firebasestorage.app"
     availability:
       - BUILD
       - RUNTIME
   - variable: NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
-    value: "594647278175" 
+    value: "594647278175"
     availability:
       - BUILD
       - RUNTIME
   - variable: NEXT_PUBLIC_FIREBASE_APP_ID
-    value: "1:594647278175:web:a876c5998082f7666cb1ea" 
+    value: "1:594647278175:web:a876c5998082f7666cb1ea"
     availability:
       - BUILD
       - RUNTIME
-  # - variable: GOOGLE_CALENDAR_ID
-  #   value: "你的日曆ID"
-  #   availability:
-  #     - BUILD
-  #     - RUNTIME
-  # - variable: NODEMAILER_SMTP_HOST
-  #   value: "smtp.example.com"
-  #   availability:
-  #     - BUILD
-  #     - RUNTIME
+
+  # =============================================================================
+
+  # --- Firebase Admin SDK (後台管理 Firebase 資料庫用) ---
+  # 請確保這個 Project ID 與你的 Admin SDK 初始化代碼使用的相匹配
+  - variable: SERVICE_ACCOUNT_PROJECT_ID
+    value: "sk-snooker-table-booking"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: SERVICE_ACCOUNT_CLIENT_EMAIL
+    secret: firebase-admin-client-email
+  - variable: SERVICE_ACCOUNT_PRIVATE_KEY
+    secret: firebase-admin-private-key
+
+  # --- Google Calendar API (後台管理 Google 日曆用) ---
+  # 請注意，如果 GOOGLE_SERVICE_ACCOUNT_EMAIL 和 GOOGLE_PRIVATE_KEY 與 Admin SDK 的值相同，
+  # 你可以在 apphosting.yaml 中重複設置 Secret 名稱，但 Secret Manager 中只需要存儲一次。
+  - variable: GOOGLE_SERVICE_ACCOUNT_EMAIL
+    secret: "firebase-adminsdk-fbsvc@sk-snooker-table-booking.iam.gserviceaccount.com"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: GOOGLE_PRIVATE_KEY
+    secret: "-----BEGIN PRIVATE KEY-----
+
+      MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC8f7dsjQchLr4z
+
+      VEDR3qyYWxVcSArzZQaWjdsZl7GYZEO1BhMxUheJPS7NgcDsCIa+dNHmZp6r+u5E
+
+      o6olitjamLGblfK4cdX0i51MR9GmuVPOElxZpMhlRISWRWC0Q2TPIRR4kVfCbPwu
+
+      QKa36X1/Iv1VjroGQLCs6mNjHjyWSYFf7UYGEeKioE0foppU6nlIN8wnqQyKB3iM
+
+      ni7+/x515T3zVvzlGA/qwxeACZkuxxbMDeYO61R4aQvlBpKEJrFU2RRt0cv6qt+I
+
+      4LzRN5XVKEMdjnTQrOoLGHU02xryxuqCJRVIwZ628tSQa6TBVwSnl22i+3GRFA82
+
+      tXJmn25dAgMBAAECggEADNOGRuXiwA8xmdsIDRp2ipMaD+fcDOXz2I8/AyMMuSv2
+
+      D82Mb/JKz90V//MDY7GMf6MB0bMWZWlDSMWNM0BF02az9nxcd3tRfcd5P4KcjAMi
+
+      JiHJib+vc3VB2LAlrXvE0ojznw+ewIf7cedBdj62T3jGnbQtnsrMlXuJIephti/H
+
+      RF5mQzDLjg5aJO3BF5TlH5P0Tq64tUVCMvUc19VAROAaxmUUVEGZzxjdZof/N2os
+
+      G892s3ngHCUQllppt+zHBvnofavAwrQaeBF5shiwIdudHYULVj1DQGItSW33kTmv
+
+      msQXxNYwuhn6A7U/jCPWbcRI0LNNVmL1vfh6EgYuqQKBgQD6FBjVIqm2Nik0vRsJ
+
+      Jc9OtWeotzNTPjGPcA/frjbqoOuCtQk+TsGmwKlLtMkrWDJ4GSH23U1c6iBMam9w
+
+      yYH+8PMr3Ewt48FlzdpZSOoUuvi1XqusED30MY6hjgth95wxF9f01ciIRn3CSdJK
+
+      WBTjz/gxgFnGdkSrMSGfyPoXxQKBgQDA9leDCbj4A+UUYQYPt7S1KM1v9ZCjsowo
+
+      wOXdyZuk8IrwBiT7hPsY2JU9U4bJKHaOgG2ohSnH2YjB4pUZahewl13njy2d/JvE
+
+      CJgTj5cq85NEByResiIrgwL4BuVAD+tQaC4k8fpXl+hrJRxyFV16hQ8e1vLR7Lgu
+
+      detO26ZNuQKBgEFtJJoOeYw8W0d6+inIhJY5C6euVnU+3kSCswR4VdHIzBTkPEja
+
+      3fs8iI5P/Bmk939IRASMHYNjlZOofQNrFOGYNGaTOjL/VUfHNYsKcoN97ze0TwGz
+
+      NiI/HOvTd9LnryuA63UYwWA14Q0Ft0jQBpcbf/mjdNlhc9G+BugA8r1pAoGAWLot
+
+      XUTAN9LaqDdA6UNIpbCAXoXlH1B/YFHqoMQOfJZa3KmGodzw9OjKHuvkY2TmtvnY
+
+      8o9gudOOLdD5TDlbcUj41fwhNq8sFMT64Ku7D/X2dmZuU9jHG4jfeZr6GS34vv1Y
+
+      koZt3Y8tQO9MmCy40hiS7lRaTSrzOfHg5F7dpokCgYAXMFi8YHUp1Ug1RTaZzmm5
+
+      6bqYD/vs8hKkcbPaTubddZhPYedEmHo2EyUO0QYP/FdMJcZb+abxX7u2nMBXmnMR
+
+      bliGy45hxreE+UNCz2E/4ExD60ZpKJ8MOtLPK3lB0t15V+hLNHxSyJznVl0GZZ38
+
+      LLfDBGP3kbNnXo3imtiLkA==
+
+      -----END PRIVATE KEY-----\n"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: GOOGLE_CALENDAR_ID_ROOM_1
+    value: "d57410ed0632d16ffbea78bd8625290d096f6fc1043147bcd4905b8680eb144d@group.\
+      calendar.google.com"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: GOOGLE_CALENDAR_ID_ROOM_2
+    value: "6fc202529fb1bcf2cc9529ae2bca36d75216b4a099735c4eb9b97097efe6e668@group.\
+      calendar.google.com"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: GOOGLE_CALENDAR_ID_DOOR_CONTROL_1A
+    value: "48ad5dfdd8e6a3e5d7a04494e369083dd8d820d922c1adf5f64e542702ad16e0@group.\
+      calendar.google.com"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: GOOGLE_CALENDAR_ID_DOOR_CONTROL_1B
+    value: "e95badfa2ce09237bc9b7628b74eab68259a105124d02644c9748e764b56a96f@group.\
+      calendar.google.com"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A
+    value: "d574bf7a1e29b09a4059827ff019202ad0fcf2388d302a60dd948b8eb372df45@group.\
+      calendar.google.com"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B
+    value: "60f14643ad2cd14c2598f6bc8b1925c4d7556375e5014276e88f6476215420dd@group.\
+      calendar.google.com"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  # --- Nodemailer (後台發送 QR Code 郵件用) ---
+  - variable: EMAIL_SERVER_HOST
+    value: "smtp.gmail.com"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: EMAIL_SERVER_PORT
+    value: "587"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: EMAIL_SERVER_USER
+    secret: email-server-user
+  - variable: EMAIL_SERVER_PASSWORD
+    secret: email-server-password
+  - variable: EMAIL_FROM_NAME
+    value: "Snooker Kingdom Booking"
+    availability:
+      - BUILD
+      - RUNTIME
