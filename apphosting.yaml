@@ -41,7 +41,7 @@ env:
       - BUILD
       - RUNTIME
   - variable: SERVICE_ACCOUNT_CLIENT_EMAIL
-    secret: "firebase-adminsdk-fbsvc@sk-snooker-table-booking.iam.gserviceaccount.com"
+    secret: firebase-adminsdk-fbsvc@sk-snooker-table-booking.iam.gserviceaccount.com
     availability:
       - BUILD
       - RUNTIME
