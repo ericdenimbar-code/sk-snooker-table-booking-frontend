@@ -1,0 +1,42 @@
+# apphosting.yaml
+env:
+  - variable: NEXT_PUBLIC_FIREBASE_API_KEY
+    value: "AIzaSyC-8D30L1mwjMwftUO_hcvYkNSAYvjKr5M" 
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+    value: "sk-snooker-table-booking.firebaseapp.com"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
+    value: "sk-snooker-table-booking"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+    value: "sk-snooker-table-booking.firebasestorage.app" 
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+    value: "594647278175" 
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_APP_ID
+    value: "1:594647278175:web:a876c5998082f7666cb1ea" 
+    availability:
+      - BUILD
+      - RUNTIME
+  # - variable: GOOGLE_CALENDAR_ID
+  #   value: "你的日曆ID"
+  #   availability:
+  #     - BUILD
+  #     - RUNTIME
+  # - variable: NODEMAILER_SMTP_HOST
+  #   value: "smtp.example.com"
+  #   availability:
+  #     - BUILD
+  #     - RUNTIME
