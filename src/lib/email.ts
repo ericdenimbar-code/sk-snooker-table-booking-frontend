@@ -1,3 +1,4 @@
+
 'use server'
 
 import nodemailer from 'nodemailer';
@@ -17,7 +18,7 @@ if (!hasEmailConfig) {
     console.warn("⚠️ Email service is not fully configured. One or more Nodemailer environment variables are missing.");
 }
 
-const transporter = nodemailer.createTransport({
+const transporter = hasEmailConfig ? nodemailer.createTransport({
     host: EMAIL_SERVER_HOST,
     port: Number(EMAIL_SERVER_PORT),
     secure: Number(EMAIL_SERVER_PORT) === 465, // true for 465, false for other ports
@@ -25,7 +26,11 @@ const transporter = nodemailer.createTransport({
         user: EMAIL_SERVER_USER,
         pass: EMAIL_SERVER_PASSWORD,
     },
-});
+    // --- START OF DIAGNOSTIC LOGGING ---
+    logger: true,
+    debug: true, // Enable debug output
+    // --- END OF DIAGNOSTIC LOGGING ---
+}) : null;
 
 
 export async function sendQrCodeEmail(
@@ -33,8 +38,8 @@ export async function sendQrCodeEmail(
     qrCodeDataUrl: string,
     contactInfo: ContactInfo
 ): Promise<boolean> {
-    if (!hasEmailConfig) {
-        console.error("Cannot send email: Email service is not configured.");
+    if (!transporter) {
+        console.error("Cannot send email: Email service is not configured or failed to initialize.");
         return false;
     }
 
@@ -76,6 +81,7 @@ export async function sendQrCodeEmail(
         console.log(`✅ Confirmation email sent to ${reservation.userEmail} for reservation ${reservation.id}`);
         return true;
     } catch (error) {
+        // Log the full error for better debugging
         console.error(`❌ Failed to send email for reservation ${reservation.id}:`, error);
         return false;
     }
