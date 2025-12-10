@@ -127,3 +127,15 @@ env:
     availability:
       - BUILD
       - RUNTIME
+
+# The runConfig block is essential for granting the Cloud Run service the permission to access secrets.
+runConfig:
+  secretEnvironmentVariables:
+    - key: SERVICE_ACCOUNT_PRIVATE_KEY
+      secret: MY_SERVICE_ACCOUNT_KEY
+    - key: GOOGLE_PRIVATE_KEY
+      secret: MY_GOOGLE_API_KEY_SECRET
+    - key: EMAIL_SERVER_USER
+      secret: email-server-user
+    - key: EMAIL_SERVER_PASSWORD
+      secret: email-server-password
