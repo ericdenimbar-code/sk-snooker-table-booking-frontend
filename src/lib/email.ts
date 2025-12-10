@@ -1,4 +1,3 @@
-
 'use server'
 
 import nodemailer from 'nodemailer';
@@ -18,7 +17,7 @@ if (!hasEmailConfig) {
     console.warn("⚠️ Email service is not fully configured. One or more Nodemailer environment variables are missing.");
 }
 
-const transporter = hasEmailConfig ? nodemailer.createTransport({
+const transporter = nodemailer.createTransport({
     host: EMAIL_SERVER_HOST,
     port: Number(EMAIL_SERVER_PORT),
     secure: Number(EMAIL_SERVER_PORT) === 465, // true for 465, false for other ports
@@ -26,7 +25,7 @@ const transporter = hasEmailConfig ? nodemailer.createTransport({
         user: EMAIL_SERVER_USER,
         pass: EMAIL_SERVER_PASSWORD,
     },
-}) : null;
+});
 
 
 export async function sendQrCodeEmail(
@@ -34,8 +33,8 @@ export async function sendQrCodeEmail(
     qrCodeDataUrl: string,
     contactInfo: ContactInfo
 ): Promise<boolean> {
-    if (!transporter) {
-        console.error("Cannot send email: Email service is not configured or failed to initialize.");
+    if (!hasEmailConfig) {
+        console.error("Cannot send email: Email service is not configured.");
         return false;
     }
 

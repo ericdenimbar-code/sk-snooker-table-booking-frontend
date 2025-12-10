@@ -3,14 +3,13 @@
 
 import React, { useState, useMemo, useCallback } from 'react';
 import {
-  format as formatDate,
+  format,
   addDays,
   subDays,
   isSameDay,
   parse,
   startOfDay,
-  parseISO,
-  isValid
+  parseISO
 } from 'date-fns';
 import { zhTW } from 'date-fns/locale';
 import { ChevronLeft, ChevronRight, Loader2, Edit, Ban, Phone, Hash, User, Building2, RefreshCw, Star, Mail, QrCode as QrCodeIcon, KeyRound } from 'lucide-react';
@@ -23,9 +22,9 @@ import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescript
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import type { Reservation, TemporaryAccess } from '@/types';
-import { cancelReservationCF, resendConfirmationEmailCF } from '@/app/admin/bookings/actions';
-import { cancelTemporaryAccessCodeCF } from '@/app/(main)/temporary-access/actions';
-import { getAllReservationsCF, getAllTemporaryAccessCF } from '@/app/(main)/new-reservation/actions';
+import { cancelReservation, resendConfirmationEmail } from '@/app/admin/bookings/actions';
+import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions';
+import { getAllReservations, getAllTemporaryAccess } from '@/app/(main)/new-reservation/actions';
 import { cn } from '@/lib/utils';
 
 
@@ -40,7 +39,6 @@ type BookingsCalendarProps = {
   initialReservations: Reservation[];
   initialTempAccess: TemporaryAccess[];
 };
-
 
 const timeToIndex = (time: string): number => {
     if (!time) return 0;
@@ -73,31 +71,21 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
     const reservationEvents: CombinedEvent[] = reservations
       .filter(r => r.status !== 'Cancelled' && r.startTime && r.endTime)
       .map(r => {
-        try {
-          const start = new Date(`${r.date}T${r.startTime}:00`);
-          let end = new Date(`${r.date}T${r.endTime}:00`);
-          const isOvernight = end <= start;
-          if (isOvernight) end = addDays(end, 1);
-          return { ...r, eventType: 'reservation', start, end, isOvernight };
-        } catch (e) {
-          console.error("Error parsing reservation date:", r, e);
-          return null;
-        }
-      }).filter((e): e is CombinedEvent => e !== null);
+        const start = parse(`${r.date} ${r.startTime}`, 'yyyy-MM-dd HH:mm', new Date());
+        let end = parse(`${r.date} ${r.endTime}`, 'yyyy-MM-dd HH:mm', new Date());
+        const isOvernight = end <= start;
+        if (isOvernight) end = addDays(end, 1);
+        return { ...r, eventType: 'reservation', start, end, isOvernight };
+      });
 
     const tempAccessEvents: CombinedEvent[] = tempAccesses
       .filter(t => t.status === 'active')
       .map(t => {
-        try {
-          const start = parseISO(t.validFrom);
-          const end = parseISO(t.validUntil);
-          const isOvernight = !isSameDay(start, end);
-          return { ...t, eventType: 'temp-access', start, end, isOvernight };
-        } catch (e) {
-          console.error("Error parsing temporary access date:", t, e);
-          return null;
-        }
-      }).filter((e): e is CombinedEvent => e !== null);
+        const start = parseISO(t.validFrom);
+        const end = parseISO(t.validUntil);
+        const isOvernight = !isSameDay(start, end);
+        return { ...t, eventType: 'temp-access', start, end, isOvernight };
+      });
 
     return [...reservationEvents, ...tempAccessEvents];
   }, [reservations, tempAccesses]);
@@ -117,22 +105,19 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
       }
       
       if (!isMatch) return false;
-
-      const eventStartsToday = isSameDay(event.start, day);
-      const eventEndsToday = isSameDay(event.end, day);
-
-      if (eventStartsToday && eventEndsToday && !event.isOvernight) return true;
-      if (eventStartsToday && !eventEndsToday && event.isOvernight) return true;
-      if (!eventStartsToday && eventEndsToday && event.isOvernight) return true;
       
-      return false;
+      const eventStartsToday = isSameDay(event.start, day);
+      const eventSpillsFromYesterday = event.isOvernight && isSameDay(event.end, day);
+      
+      // This is the fix: also include events that start today AND are overnight
+      return eventStartsToday || eventSpillsFromYesterday;
     });
   }, [events]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     toast({ title: '正在同步...', description: '正在從資料庫重新整理所有記錄。' });
-    const [resResult, tempResult] = await Promise.all([getAllReservationsCF(), getAllTemporaryAccessCF()]);
+    const [resResult, tempResult] = await Promise.all([getAllReservations(), getAllTemporaryAccess()]);
     
     if (resResult.success && resResult.reservations) {
         setReservations(resResult.reservations);
@@ -178,7 +163,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
     setIsSubmitting(true);
 
     if (selectedEvent.eventType === 'reservation') {
-        const result = await cancelReservationCF(selectedEvent, shouldRefund);
+        const result = await cancelReservation(selectedEvent, shouldRefund);
         if (result.success) {
             const successMessage = shouldRefund 
                 ? `已成功為 ${selectedEvent.userEmail} 退回 HKD ${selectedEvent.costInTokens}。`
@@ -189,7 +174,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
             toast({ variant: 'destructive', title: '取消失敗', description: result.error });
         }
     } else if (selectedEvent.eventType === 'temp-access') {
-        const result = await cancelTemporaryAccessCodeCF(selectedEvent.id, selectedEvent.userId);
+        const result = await cancelTemporaryAccessCode(selectedEvent.id, selectedEvent.userId);
         if (result.success) {
             toast({ title: '臨時碼已取消' });
             setTempAccesses(prev => prev.map(t => t.id === selectedEvent.id ? { ...t, status: 'cancelled' } : t));
@@ -209,7 +194,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
         <div className="flex items-center justify-between p-2 sm:p-4 border-b shrink-0">
             <div className='flex items-center gap-2'>
               <Button variant="ghost" size="icon" onClick={() => setCurrentDate(subDays(currentDate, 1))}><ChevronLeft className="h-5 w-5" /></Button>
-              <h2 className="text-lg sm:text-xl font-semibold text-center">{formatDate(currentDate, 'yyyy 年 M 月 d 日', { locale: zhTW })}</h2>
+              <h2 className="text-lg sm:text-xl font-semibold text-center">{format(currentDate, 'yyyy 年 M 月 d 日', { locale: zhTW })}</h2>
               <Button variant="ghost" size="icon" onClick={() => setCurrentDate(addDays(currentDate, 1))}><ChevronRight className="h-5 w-5" /></Button>
             </div>
             <Button variant="outline" onClick={handleRefresh} disabled={isRefreshing}>
@@ -230,9 +215,9 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
 
           <div className="flex-1 flex flex-col overflow-x-hidden">
               <div className="grid grid-cols-3 sticky top-0 bg-background z-20 shrink-0">
-                  <div className="text-center py-1 border-b border-r"><p className="font-semibold !mb-0">枱號 1</p><p className="text-xs text-muted-foreground !mb-0">{formatDate(displayedDays[0], 'EEE d', { locale: zhTW })}</p></div>
-                  <div className="text-center py-1 border-b border-r"><p className="font-semibold !mb-0">枱號 2</p><p className="text-xs text-muted-foreground !mb-0">{formatDate(displayedDays[0], 'EEE d', { locale: zhTW })}</p></div>
-                  <div className="text-center py-1 border-b border-r"><p className="font-semibold !mb-0">臨時進出</p><p className="text-xs text-muted-foreground !mb-0">{formatDate(displayedDays[0], 'EEE d', { locale: zhTW })}</p></div>
+                  <div className="text-center py-1 border-b border-r"><p className="font-semibold !mb-0">枱號 1</p><p className="text-xs text-muted-foreground !mb-0">{format(displayedDays[0], 'EEE d', { locale: zhTW })}</p></div>
+                  <div className="text-center py-1 border-b border-r"><p className="font-semibold !mb-0">枱號 2</p><p className="text-xs text-muted-foreground !mb-0">{format(displayedDays[0], 'EEE d', { locale: zhTW })}</p></div>
+                  <div className="text-center py-1 border-b border-r"><p className="font-semibold !mb-0">臨時進出</p><p className="text-xs text-muted-foreground !mb-0">{format(displayedDays[0], 'EEE d', { locale: zhTW })}</p></div>
               </div>
 
               <div className="grid grid-cols-3 flex-1 overflow-y-auto">
@@ -266,25 +251,29 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
 const EventButton = ({ event, currentDay, onClick, className }: { event: CombinedEvent, currentDay: Date, onClick: (e: CombinedEvent) => void, className?: string }) => {
     
     const isSpillOver = !isSameDay(event.start, currentDay);
-    
-    const startTimeForCalc = isSpillOver ? startOfDay(currentDay) : event.start;
-    const endTimeForCalc = isSameDay(event.end, currentDay) ? event.end : addDays(startOfDay(currentDay), 1);
-    
-    const startSlots = timeToIndex(formatDate(startTimeForCalc, 'HH:mm'));
-    const endSlots = timeToIndex(formatDate(endTimeForCalc, 'HH:mm'));
-    
-    let durationInSlots = endSlots - startSlots;
-    if (durationInSlots <= 0) durationInSlots = 48 - startSlots + endSlots;
-    if (isSpillOver && isSameDay(event.end, startOfDay(event.start))) durationInSlots = endSlots;
+    const dayStart = startOfDay(currentDay);
 
+    const startTimeForCalc = isSpillOver ? dayStart : event.start;
+    let endTimeForCalc = event.end;
+    
+    if (event.isOvernight && isSameDay(event.start, currentDay)) {
+        endTimeForCalc = addDays(dayStart, 1);
+    } else if (!isSameDay(event.end, currentDay)) {
+        endTimeForCalc = addDays(dayStart, 1);
+    }
+    
+    const startSlots = timeToIndex(format(startTimeForCalc, 'HH:mm'));
+    const endSlots = timeToIndex(format(endTimeForCalc, 'HH:mm'));
+    
+    const durationInSlots = endSlots - startSlots;
 
     if (durationInSlots <= 0) return null;
     
-    const top = `${startSlots * 1.5}rem`; 
+    const top = `${startSlots * 1.5}rem`; // Each slot (30-min) is 1.5rem high
     const height = `${durationInSlots * 1.5}rem`;
     
     const userName = event.eventType === 'reservation' ? event.userName : event.userEmail.split('@')[0];
-    const timeText = `${formatDate(event.start, 'HH:mm')} - ${formatDate(event.end, 'HH:mm')}`;
+    const timeText = `${format(event.start, 'HH:mm')} - ${format(event.end, 'HH:mm')}`;
     
     return (
         <button
@@ -308,9 +297,7 @@ const EventDetailDialog = ({ event, open, onOpenChange, onCancel, onShowQr }: { 
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{isReservation ? '預訂詳情' : '臨時進出碼詳情'}</DialogTitle>
-           <DialogDescription>
-             {formatDate(event.start, 'yyyy年MM月dd日 HH:mm')} - {formatDate(event.end, 'HH:mm')}
-           </DialogDescription>
+           <DialogDescription>{format(event.start, 'yyyy年MM月dd日 HH:mm')} - {format(event.end, 'HH:mm')}</DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">
             <div className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-3">
