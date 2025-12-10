@@ -4,6 +4,7 @@
 import { google } from 'googleapis';
 import type { Reservation } from '@/types';
 import { add } from 'date-fns';
+import { zonedTimeToUtc } from 'date-fns-tz';
 
 // 環境變數檢查
 const SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
@@ -73,8 +74,11 @@ export async function createGoogleCalendarEvent(reservation: Reservation): Promi
 
     const { id, roomId, roomName, userName, userPhone, date, startTime, endTime, qrSecret } = reservation;
 
-    const startDateTime = new Date(`${date}T${startTime}:00`);
-    let endDateTime = new Date(`${date}T${endTime}:00`);
+    // --- Timezone Correction ---
+    // Create Date objects by interpreting the local time strings as being in the 'Asia/Hong_Kong' timezone.
+    const startDateTime = zonedTimeToUtc(`${date}T${startTime}:00`, HONG_KONG_TIME_ZONE);
+    let endDateTime = zonedTimeToUtc(`${date}T${endTime}:00`, HONG_KONG_TIME_ZONE);
+    // --- End of Timezone Correction ---
 
     // Handle overnight bookings
     if (endDateTime <= startDateTime) {
