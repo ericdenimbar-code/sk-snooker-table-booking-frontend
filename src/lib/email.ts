@@ -1,4 +1,3 @@
-
 'use server'
 
 import nodemailer from 'nodemailer';
@@ -26,10 +25,6 @@ const transporter = hasEmailConfig ? nodemailer.createTransport({
         user: EMAIL_SERVER_USER,
         pass: EMAIL_SERVER_PASSWORD,
     },
-    // --- START OF DIAGNOSTIC LOGGING ---
-    logger: true,
-    debug: true, // Enable debug output
-    // --- END OF DIAGNOSTIC LOGGING ---
 }) : null;
 
 
@@ -40,6 +35,16 @@ export async function sendQrCodeEmail(
 ): Promise<boolean> {
     if (!transporter) {
         console.error("Cannot send email: Email service is not configured or failed to initialize.");
+        return false;
+    }
+
+    // --- FIX: Use CID inline attachments for the QR code ---
+    const qrCodeCid = `qrcode_${reservation.id}@sk-booking.com`;
+    // Extract the Base64 part of the data URL
+    const base64Data = qrCodeDataUrl.split(';base64,').pop();
+
+    if (!base64Data) {
+        console.error(`❌ Failed to extract Base64 data from QR code Data URL for reservation ${reservation.id}`);
         return false;
     }
 
@@ -62,7 +67,7 @@ export async function sendQrCodeEmail(
                 </ul>
                 <p>這是您的專屬入場 QR Code，請勿分享給他人：</p>
                 <div style="text-align: center; margin: 20px 0;">
-                    <img src="${qrCodeDataUrl}" alt="Reservation QR Code" style="width: 250px; height: 250px;" />
+                    <img src="cid:${qrCodeCid}" alt="Reservation QR Code" style="width: 250px; height: 250px;" />
                 </div>
                 <hr>
                 <p>如有任何問題，歡迎隨時與我們聯絡。</p>
@@ -74,6 +79,14 @@ export async function sendQrCodeEmail(
                 </p>
             </div>
         `,
+        attachments: [
+            {
+                filename: 'qrcode.png',
+                content: base64Data,
+                encoding: 'base64',
+                cid: qrCodeCid, // Set the Content-ID
+            },
+        ],
     };
 
     try {
