@@ -9,7 +9,8 @@ import {
   isSameDay,
   parse,
   startOfDay,
-  parseISO
+  parseISO,
+  isValid
 } from 'date-fns';
 import { zhTW } from 'date-fns/locale';
 import { ChevronLeft, ChevronRight, Loader2, Edit, Ban, Phone, Hash, User, Building2, RefreshCw, Star, Mail, QrCode as QrCodeIcon, KeyRound } from 'lucide-react';
@@ -22,9 +23,9 @@ import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescript
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import type { Reservation, TemporaryAccess } from '@/types';
-import { cancelReservation, resendConfirmationEmail } from '@/app/admin/bookings/actions';
-import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions';
-import { getAllReservations, getAllTemporaryAccess } from '@/app/(main)/new-reservation/actions';
+import { cancelReservationCF, resendConfirmationEmailCF } from '@/app/admin/bookings/actions';
+import { cancelTemporaryAccessCodeCF } from '@/app/(main)/temporary-access/actions';
+import { getAllReservationsCF, getAllTemporaryAccessCF } from '@/app/(main)/new-reservation/actions';
 import { cn } from '@/lib/utils';
 
 
@@ -73,19 +74,27 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
       .map(r => {
         const start = parse(`${r.date} ${r.startTime}`, 'yyyy-MM-dd HH:mm', new Date());
         let end = parse(`${r.date} ${r.endTime}`, 'yyyy-MM-dd HH:mm', new Date());
+        if (!isValid(start) || !isValid(end)) {
+            console.error('Invalid date found in reservation:', r);
+            return null;
+        }
         const isOvernight = end <= start;
         if (isOvernight) end = addDays(end, 1);
         return { ...r, eventType: 'reservation', start, end, isOvernight };
-      });
+      }).filter((e): e is CombinedEvent => e !== null);
 
     const tempAccessEvents: CombinedEvent[] = tempAccesses
       .filter(t => t.status === 'active')
       .map(t => {
         const start = parseISO(t.validFrom);
         const end = parseISO(t.validUntil);
+        if (!isValid(start) || !isValid(end)) {
+            console.error('Invalid date found in temporary access:', t);
+            return null;
+        }
         const isOvernight = !isSameDay(start, end);
         return { ...t, eventType: 'temp-access', start, end, isOvernight };
-      });
+      }).filter((e): e is CombinedEvent => e !== null);
 
     return [...reservationEvents, ...tempAccessEvents];
   }, [reservations, tempAccesses]);
@@ -117,7 +126,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
   const handleRefresh = async () => {
     setIsRefreshing(true);
     toast({ title: '正在同步...', description: '正在從資料庫重新整理所有記錄。' });
-    const [resResult, tempResult] = await Promise.all([getAllReservations(), getAllTemporaryAccess()]);
+    const [resResult, tempResult] = await Promise.all([getAllReservationsCF(), getAllTemporaryAccessCF()]);
     
     if (resResult.success && resResult.reservations) {
         setReservations(resResult.reservations);
@@ -163,7 +172,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
     setIsSubmitting(true);
 
     if (selectedEvent.eventType === 'reservation') {
-        const result = await cancelReservation(selectedEvent, shouldRefund);
+        const result = await cancelReservationCF(selectedEvent, shouldRefund);
         if (result.success) {
             const successMessage = shouldRefund 
                 ? `已成功為 ${selectedEvent.userEmail} 退回 HKD ${selectedEvent.costInTokens}。`
@@ -174,7 +183,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
             toast({ variant: 'destructive', title: '取消失敗', description: result.error });
         }
     } else if (selectedEvent.eventType === 'temp-access') {
-        const result = await cancelTemporaryAccessCode(selectedEvent.id, selectedEvent.userId);
+        const result = await cancelTemporaryAccessCodeCF(selectedEvent.id, selectedEvent.userId);
         if (result.success) {
             toast({ title: '臨時碼已取消' });
             setTempAccesses(prev => prev.map(t => t.id === selectedEvent.id ? { ...t, status: 'cancelled' } : t));

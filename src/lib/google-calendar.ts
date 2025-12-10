@@ -2,9 +2,8 @@
 'use server';
 
 import { google } from 'googleapis';
-import { db } from '@/lib/firebase-admin';
-import type { Reservation, TemporaryAccess } from '@/types';
-import { parseISO, isWithinInterval, add, sub, format } from 'date-fns';
+import type { Reservation } from '@/types';
+import { add } from 'date-fns';
 
 // 環境變數檢查
 const SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
@@ -36,256 +35,118 @@ const auth = new google.auth.JWT({
 // 建立 Calendar API 實例
 const calendar = google.calendar({ version: 'v3', auth });
 
-type RoomId = '1' | '2' | 'door_control';
-type Slot = '1A' | '1B' | '2A' | '2B';
+const HONG_KONG_TIME_ZONE = 'Asia/Hong_Kong';
 
-type EventDetails = {
-    summary: string;
-    description: string;
-    start: string; // ISO 8601 格式
-    end: string;   // ISO 8601 格式
-    eventId: string;
-}
+async function findAvailableDoorSlot(roomId: '1' | '2', startDateTime: Date, endDateTime: Date) {
+    const relevantSlots = roomId === '1' 
+        ? { '1A': CALENDAR_ID_DOOR_CONTROL_1A, '1B': CALENDAR_ID_DOOR_CONTROL_1B }
+        : { '2A': CALENDAR_ID_DOOR_CONTROL_2A, '2B': CALENDAR_ID_DOOR_CONTROL_2B };
 
-/**
- * Finds an available door control calendar slot for a given time range.
- * @param roomId The room ID ('1' or '2').
- * @param start The start time of the booking.
- * @param end The end time of the booking.
- * @returns The slot ID ('1A', '1B', '2A', '2B') or null if none is available.
- */
-async function findAvailableSlot(roomId: '1' | '2', start: Date, end: Date): Promise<Slot | null> {
-    const slots: Slot[] = roomId === '1' ? ['1A', '1B'] : ['2A', '2B'];
-    
-    for (const slot of slots) {
-        const calendarId = getCalendarIdBySlot(slot);
+    for (const [slot, calendarId] of Object.entries(relevantSlots)) {
         if (!calendarId) continue;
-
         try {
             const response = await calendar.events.list({
                 calendarId: calendarId,
-                timeMin: start.toISOString(),
-                timeMax: end.toISOString(),
-                singleEvents: true,
+                timeMin: startDateTime.toISOString(),
+                timeMax: endDateTime.toISOString(),
                 maxResults: 1,
+                singleEvents: true,
             });
-
             if (!response.data.items || response.data.items.length === 0) {
-                // This slot is free, return it
-                return slot;
+                return calendarId; // This slot is free
             }
         } catch (error) {
-            console.error(`Error checking availability for slot ${slot}:`, error);
-            // If we can't check a slot, assume it's busy and try the next one.
+            console.error(`Error checking calendar ${calendarId} for slot ${slot}:`, error);
         }
     }
-
-    // No free slot found
-    return null;
+    // Fallback to the primary 'A' slot if both are busy, assuming overwrite is acceptable.
+    console.warn(`No free door control slot found for room ${roomId}. Falling back to primary slot.`);
+    return roomId === '1' ? CALENDAR_ID_DOOR_CONTROL_1A : CALENDAR_ID_DOOR_CONTROL_2A;
 }
 
-/**
- * Gets the Google Calendar ID based on the room or slot ID.
- * @param id The ID of the room or slot.
- * @returns The corresponding Google Calendar ID.
- */
-function getCalendarIdBySlot(id: RoomId | Slot): string | undefined {
-    switch (id) {
-        case '1': return CALENDAR_ID_ROOM_1;
-        case '2': return CALENDAR_ID_ROOM_2;
-        case '1A': return CALENDAR_ID_DOOR_CONTROL_1A;
-        case '1B': return CALENDAR_ID_DOOR_CONTROL_1B;
-        case '2A': return CALENDAR_ID_DOOR_CONTROL_2A;
-        case '2B': return CALENDAR_ID_DOOR_CONTROL_2B;
-        case 'door_control': return CALENDAR_ID_DOOR_CONTROL_1A; 
-        default: 
-            console.error(`Invalid ID passed to getCalendarIdBySlot: ${id}`);
-            return undefined;
-    }
-}
 
-/**
- * Creates a Google Calendar event in the specified calendar.
- */
-async function createEvent(calendarId: string, details: EventDetails): Promise<{ eventId: string; eventLink: string; } | null> {
-    try {
-        const response = await calendar.events.insert({
-            calendarId: calendarId,
-            requestBody: {
-                summary: details.summary,
-                description: details.description,
-                start: { dateTime: details.start, timeZone: 'Asia/Hong_Kong' },
-                end: { dateTime: details.end, timeZone: 'Asia/Hong_Kong' },
-                id: details.eventId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase(), 
-            },
-        });
-
-        if (response.data) {
-            console.log(`✅ Successfully created event '${response.data.id}' in calendar '${calendarId}'.`);
-            return { eventId: response.data.id!, eventLink: response.data.htmlLink! };
-        }
-        return null;
-
-    } catch (error: any) {
-        if (error.code === 409) {
-            console.warn(`Event '${details.eventId}' already exists in calendar '${calendarId}'.`);
-            return { eventId: details.eventId, eventLink: '' };
-        }
-        console.error(`❌ Error creating event in calendar '${calendarId}':`, error);
-        return null;
-    }
-}
-
-/**
- * Main function to create calendar events for a reservation or temporary access.
- */
-export async function createGoogleCalendarEvent(reservation: Reservation | TemporaryAccess): Promise<boolean> {
+export async function createGoogleCalendarEvent(reservation: Reservation): Promise<boolean> {
     if (!hasGoogleConfig) {
         console.error("Cannot create calendar event: Google Calendar API is not configured.");
         return false;
     }
 
-    const isTempAccess = 'validFrom' in reservation;
-    
-    // --- START: Absolute Safe Data Extraction ---
-    let eventSummary: string;
-    let userIdentifier: string;
-    let qrSecret: string;
-    let bookingStart: Date;
-    let bookingEnd: Date;
-    let roomIdForSlotFinding: '1' | '2';
-    
-    if (isTempAccess) {
-        // It's a TemporaryAccess object
-        const tempAccess = reservation as TemporaryAccess;
-        userIdentifier = tempAccess.userEmail;
-        eventSummary = userIdentifier.split('@')[0];
-        qrSecret = tempAccess.id; // For temp access, the ID is the secret
-        bookingStart = parseISO(tempAccess.validFrom);
-        bookingEnd = parseISO(tempAccess.validUntil);
-        roomIdForSlotFinding = '1'; // Default to room 1's rotation for any temp access
-    } else {
-        // It's a Reservation object
-        const regularReservation = reservation as Reservation;
-        userIdentifier = regularReservation.userName;
-        eventSummary = regularReservation.userName;
-        qrSecret = regularReservation.qrSecret;
-        bookingStart = parseISO(`${regularReservation.date}T${regularReservation.startTime}:00`);
-        bookingEnd = parseISO(`${regularReservation.date}T${regularReservation.endTime}:00`);
-        if (bookingEnd <= bookingStart) {
-            bookingEnd = add(bookingEnd, { days: 1 });
-        }
-        roomIdForSlotFinding = regularReservation.roomId as '1' | '2';
-    }
-    
-    if (!qrSecret) {
-        console.error("Cannot create calendar event: ID/QR Secret is missing.");
-        return false;
-    }
-    // --- END: Absolute Safe Data Extraction ---
+    const { id, roomId, roomName, userName, userPhone, date, startTime, endTime, qrSecret } = reservation;
 
-    // --- Create Main Calendar Event for Regular Reservations ---
-    if (!isTempAccess) {
-        const mainCalendarId = getCalendarIdBySlot(roomIdForSlotFinding);
-        if (mainCalendarId) {
-            await createEvent(mainCalendarId, {
-                summary: eventSummary,
-                description: `Ref: ${reservation.id}\nPhone: ${(reservation as Reservation).userPhone || 'N/A'}`,
-                start: bookingStart.toISOString(),
-                end: bookingEnd.toISOString(),
-                eventId: reservation.id,
-            });
-        }
-    }
-    
-    // --- Create Door Control Calendar Event with Time Buffer ---
-    const doorControlStart = isTempAccess ? bookingStart : sub(bookingStart, { minutes: 15 });
-    const doorControlEnd = isTempAccess ? bookingEnd : add(bookingEnd, { minutes: 15 });
+    const startDateTime = new Date(`${date}T${startTime}:00`);
+    let endDateTime = new Date(`${date}T${endTime}:00`);
 
-    let availableSlot = await findAvailableSlot(roomIdForSlotFinding, doorControlStart, doorControlEnd);
-    
-    if (isTempAccess && !availableSlot) {
-        availableSlot = await findAvailableSlot('2', doorControlStart, doorControlEnd);
+    // Handle overnight bookings
+    if (endDateTime <= startDateTime) {
+        endDateTime = add(endDateTime, { days: 1 });
     }
 
-    if (availableSlot) {
-        const doorCalendarId = getCalendarIdBySlot(availableSlot);
+    const eventDetails = {
+        summary: `${userName} - ${roomName.replace('房間', '枱號')}`,
+        description: `Ref: ${id}\n電話: ${userPhone || '未提供'}`,
+        start: { dateTime: startDateTime.toISOString(), timeZone: HONG_KONG_TIME_ZONE },
+        end: { dateTime: endDateTime.toISOString(), timeZone: HONG_KONG_TIME_ZONE },
+        id: id.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
+    };
+    
+    const doorEventDetails = {
+        ...eventDetails,
+        summary: qrSecret, // Door control calendar uses the QR secret as the event title
+        description: `開門碼\n用戶: ${userName}\nRef: ${id}`
+    };
+
+    try {
+        // --- Create event in the main room calendar ---
+        const mainCalendarId = roomId === '1' ? CALENDAR_ID_ROOM_1 : CALENDAR_ID_ROOM_2;
+        await calendar.events.insert({ calendarId: mainCalendarId, requestBody: eventDetails });
+
+        // --- Create event in an available door control calendar ---
+        const doorCalendarId = await findAvailableDoorSlot(roomId as '1' | '2', startDateTime, endDateTime);
         if (doorCalendarId) {
-            await createEvent(doorCalendarId, {
-                summary: qrSecret, // KEY FIX: The summary for door control is ALWAYS the secret.
-                description: `User: ${userIdentifier} | Ref: ${reservation.id} | Slot: ${availableSlot}`,
-                start: doorControlStart.toISOString(),
-                end: doorControlEnd.toISOString(),
-                eventId: reservation.id,
-            });
+            await calendar.events.insert({ calendarId: doorCalendarId, requestBody: doorEventDetails });
+        } else {
+             console.error(`Fatal: No door control calendar could be found or used for room ${roomId}.`);
+        }
+        
+        return true;
+    } catch (error: any) {
+        // If event already exists (409), we can consider it a success for idempotency
+        if (error.code === 409) {
+            console.warn(`Event with ID ${id} already exists. Skipping creation.`);
             return true;
         }
-    } else {
-        // Fallback logic if no clean slot is found
-        console.error(`No available A/B slot found for room ${roomIdForSlotFinding} at the requested time.`);
-        const fallbackSlot: Slot = roomIdForSlotFinding === '1' ? '1A' : '2A';
-        const fallbackCalendarId = getCalendarIdBySlot(fallbackSlot);
-        if (fallbackCalendarId) {
-            console.warn(`Falling back to primary slot ${fallbackSlot} for door control.`);
-            await createEvent(fallbackCalendarId, {
-                summary: qrSecret, // KEY FIX: Also use secret in fallback
-                description: `User: ${userIdentifier} | Ref: ${reservation.id} | SLOT FALLBACK`,
-                start: doorControlStart.toISOString(),
-                end: doorControlEnd.toISOString(),
-                eventId: reservation.id,
-            });
-        }
-        return false; // Still return false as this is a degraded state
+        console.error('❌ Error creating Google Calendar event:', error);
+        return false;
     }
-    
-    return false;
 }
 
-/**
- * Deletes a Google Calendar event from all relevant calendars.
- */
-export async function deleteGoogleCalendarEvent(reservation: Reservation | TemporaryAccess): Promise<boolean> {
-    if (!hasGoogleConfig) return false;
+export async function deleteGoogleCalendarEvent(eventId: string, roomId: '1' | '2'): Promise<boolean> {
+     if (!hasGoogleConfig) {
+        console.error("Cannot delete calendar event: Google Calendar API is not configured.");
+        return false;
+    }
     
-    const eventId = reservation.id;
     const sanitizedEventId = eventId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    
-    const tryDelete = async (calendarId: string) => {
+
+    const calendarsToTry = [
+        roomId === '1' ? CALENDAR_ID_ROOM_1 : CALENDAR_ID_ROOM_2,
+        ...(roomId === '1' ? [CALENDAR_ID_DOOR_CONTROL_1A, CALENDAR_ID_DOOR_CONTROL_1B] : [CALENDAR_ID_DOOR_CONTROL_2A, CALENDAR_ID_DOOR_CONTROL_2B])
+    ];
+
+    let success = true;
+    for (const calendarId of calendarsToTry) {
+        if (!calendarId) continue;
         try {
             await calendar.events.delete({ calendarId, eventId: sanitizedEventId });
             console.log(`Successfully deleted event ${sanitizedEventId} from calendar ${calendarId}`);
         } catch (error: any) {
-            if (error.code !== 404) { // Don't log an error if the event simply wasn't found
-                console.warn(`Could not delete event ${sanitizedEventId} from ${calendarId}: ${error.message}`);
+            if (error.code === 404) {
+                console.log(`Event ${sanitizedEventId} not found in calendar ${calendarId}. Skipping.`);
+            } else {
+                console.error(`Error deleting event from ${calendarId}:`, error.message);
+                success = false; // Mark as failed but continue trying other calendars
             }
         }
-    };
-    
-    if ('validFrom' in reservation) {
-        const allDoorCalendars = [CALENDAR_ID_DOOR_CONTROL_1A, CALENDAR_ID_DOOR_CONTROL_1B, CALENDAR_ID_DOOR_CONTROL_2A, CALENDAR_ID_DOOR_CONTROL_2B].filter(Boolean);
-        for (const calId of allDoorCalendars) {
-            await tryDelete(calId as string);
-        }
-        console.log(`Attempted deletion of temp access event ${eventId} from all door calendars.`);
-        return true;
     }
-
-    const regularReservation = reservation as Reservation;
-    const { roomId } = regularReservation;
-
-    const mainCalendarId = getCalendarIdBySlot(roomId as '1' | '2');
-    if (mainCalendarId) {
-        await tryDelete(mainCalendarId);
-    }
-    
-    const doorSlots: Slot[] = roomId === '1' ? ['1A', '1B'] : ['2A', '2B'];
-    for (const slot of doorSlots) {
-        const doorCalendarId = getCalendarIdBySlot(slot);
-        if (doorCalendarId) {
-            await tryDelete(doorCalendarId);
-        }
-    }
-    
-    console.log(`Attempted deletion of all calendar events for reservation ${eventId}`);
-    return true;
+    return success;
 }
