@@ -1,6 +1,5 @@
 {
   "hosting": {
-    "source": ".",
     "frameworksBackend": {
       "region": "asia-east1"
     }
