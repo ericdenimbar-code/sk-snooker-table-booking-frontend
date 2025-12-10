@@ -161,6 +161,8 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
         userIdentifier = tempAccess.userEmail;
         eventSummary = userIdentifier.split('@')[0];
         qrSecret = tempAccess.id; // For temp access, the ID is the secret
+        
+        // --- TIMEZONE FIX: Use original ISO string as it's timezone-aware
         bookingStart = parseISO(tempAccess.validFrom);
         bookingEnd = parseISO(tempAccess.validUntil);
         roomIdForSlotFinding = '1'; // Default to room 1's rotation for any temp access
@@ -170,8 +172,11 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
         userIdentifier = regularReservation.userName;
         eventSummary = regularReservation.userName;
         qrSecret = regularReservation.qrSecret;
-        bookingStart = parseISO(`${regularReservation.date}T${regularReservation.startTime}:00`);
-        bookingEnd = parseISO(`${regularReservation.date}T${regularReservation.endTime}:00`);
+        
+        // --- TIMEZONE FIX: Append +08:00 to force correct parsing on UTC server
+        bookingStart = parseISO(`${regularReservation.date}T${regularReservation.startTime}:00+08:00`);
+        bookingEnd = parseISO(`${regularReservation.date}T${regularReservation.endTime}:00+08:00`);
+
         if (bookingEnd <= bookingStart) {
             bookingEnd = add(bookingEnd, { days: 1 });
         }
