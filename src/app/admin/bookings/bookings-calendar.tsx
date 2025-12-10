@@ -12,7 +12,6 @@ import {
   parseISO,
   isValid
 } from 'date-fns';
-import { utcToZonedTime, formatInTimeZone } from 'date-fns-tz';
 import { zhTW } from 'date-fns/locale';
 import { ChevronLeft, ChevronRight, Loader2, Edit, Ban, Phone, Hash, User, Building2, RefreshCw, Star, Mail, QrCode as QrCodeIcon, KeyRound } from 'lucide-react';
 import Image from 'next/image';
@@ -42,7 +41,6 @@ type BookingsCalendarProps = {
   initialTempAccess: TemporaryAccess[];
 };
 
-const HONG_KONG_TIME_ZONE = 'Asia/Hong_Kong';
 
 const timeToIndex = (time: string): number => {
     if (!time) return 0;
@@ -76,8 +74,8 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
       .filter(r => r.status !== 'Cancelled' && r.startTime && r.endTime)
       .map(r => {
         try {
-          const start = zonedTimeToUtc(`${r.date}T${r.startTime}:00`, HONG_KONG_TIME_ZONE);
-          let end = zonedTimeToUtc(`${r.date}T${r.endTime}:00`, HONG_KONG_TIME_ZONE);
+          const start = new Date(`${r.date}T${r.startTime}:00`);
+          let end = new Date(`${r.date}T${r.endTime}:00`);
           const isOvernight = end <= start;
           if (isOvernight) end = addDays(end, 1);
           return { ...r, eventType: 'reservation', start, end, isOvernight };
@@ -120,18 +118,11 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
       
       if (!isMatch) return false;
 
-      // Convert server UTC dates to HK time for comparison
-      const zonedStart = utcToZonedTime(event.start, HONG_KONG_TIME_ZONE);
-      const zonedEnd = utcToZonedTime(event.end, HONG_KONG_TIME_ZONE);
+      const eventStartsToday = isSameDay(event.start, day);
+      const eventEndsToday = isSameDay(event.end, day);
 
-      const eventStartsToday = isSameDay(zonedStart, day);
-      const eventEndsToday = isSameDay(zonedEnd, day);
-
-      // Event is fully within today
       if (eventStartsToday && eventEndsToday && !event.isOvernight) return true;
-      // Overnight event starts today
       if (eventStartsToday && !eventEndsToday && event.isOvernight) return true;
-      // Overnight event ends today
       if (!eventStartsToday && eventEndsToday && event.isOvernight) return true;
       
       return false;
@@ -274,20 +265,17 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
 
 const EventButton = ({ event, currentDay, onClick, className }: { event: CombinedEvent, currentDay: Date, onClick: (e: CombinedEvent) => void, className?: string }) => {
     
-    const zonedStart = utcToZonedTime(event.start, HONG_KONG_TIME_ZONE);
-    const zonedEnd = utcToZonedTime(event.end, HONG_KONG_TIME_ZONE);
-
-    const isSpillOver = !isSameDay(zonedStart, currentDay);
+    const isSpillOver = !isSameDay(event.start, currentDay);
     
-    const startTimeForCalc = isSpillOver ? startOfDay(currentDay) : zonedStart;
-    const endTimeForCalc = isSameDay(zonedEnd, currentDay) ? zonedEnd : addDays(startOfDay(currentDay), 1);
+    const startTimeForCalc = isSpillOver ? startOfDay(currentDay) : event.start;
+    const endTimeForCalc = isSameDay(event.end, currentDay) ? event.end : addDays(startOfDay(currentDay), 1);
     
     const startSlots = timeToIndex(formatDate(startTimeForCalc, 'HH:mm'));
     const endSlots = timeToIndex(formatDate(endTimeForCalc, 'HH:mm'));
     
     let durationInSlots = endSlots - startSlots;
     if (durationInSlots <= 0) durationInSlots = 48 - startSlots + endSlots;
-    if (isSpillOver && isSameDay(zonedEnd, startOfDay(zonedStart))) durationInSlots = endSlots;
+    if (isSpillOver && isSameDay(event.end, startOfDay(event.start))) durationInSlots = endSlots;
 
 
     if (durationInSlots <= 0) return null;
@@ -296,7 +284,7 @@ const EventButton = ({ event, currentDay, onClick, className }: { event: Combine
     const height = `${durationInSlots * 1.5}rem`;
     
     const userName = event.eventType === 'reservation' ? event.userName : event.userEmail.split('@')[0];
-    const timeText = `${formatInTimeZone(event.start, HONG_KONG_TIME_ZONE, 'HH:mm')} - ${formatInTimeZone(event.end, HONG_KONG_TIME_ZONE, 'HH:mm')}`;
+    const timeText = `${formatDate(event.start, 'HH:mm')} - ${formatDate(event.end, 'HH:mm')}`;
     
     return (
         <button
@@ -321,7 +309,7 @@ const EventDetailDialog = ({ event, open, onOpenChange, onCancel, onShowQr }: { 
         <DialogHeader>
           <DialogTitle>{isReservation ? '預訂詳情' : '臨時進出碼詳情'}</DialogTitle>
            <DialogDescription>
-             {formatInTimeZone(event.start, HONG_KONG_TIME_ZONE, 'yyyy年MM月dd日 HH:mm')} - {formatInTimeZone(event.end, HONG_KONG_TIME_ZONE, 'HH:mm')}
+             {formatDate(event.start, 'yyyy年MM月dd日 HH:mm')} - {formatDate(event.end, 'HH:mm')}
            </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">
