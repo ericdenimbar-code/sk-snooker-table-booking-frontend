@@ -60,7 +60,7 @@ env:
       - BUILD
       - RUNTIME
   - variable: GOOGLE_PRIVATE_KEY
-    secret: MY_GOOGLE_PRIVATE_KEY
+    secret: MY_GOOGLE_API_KEY_SECRET
     availability:
       - BUILD
       - RUNTIME
