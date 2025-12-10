@@ -55,7 +55,7 @@ env:
   # 請注意，如果 GOOGLE_SERVICE_ACCOUNT_EMAIL 和 GOOGLE_PRIVATE_KEY 與 Admin SDK 的值相同，
   # 你可以在 apphosting.yaml 中重複設置 Secret 名稱，但 Secret Manager 中只需要存儲一次。
   - variable: GOOGLE_SERVICE_ACCOUNT_EMAIL
-    secret: "firebase-adminsdk-fbsvc@sk-snooker-table-booking.iam.gserviceaccount.com"
+    value: "firebase-adminsdk-fbsvc@sk-snooker-table-booking.iam.gserviceaccount.com"
     availability:
       - BUILD
       - RUNTIME
@@ -114,8 +114,14 @@ env:
       - RUNTIME
   - variable: EMAIL_SERVER_USER
     secret: email-server-user
+    availability: 
+      - BUILD
+      - RUNTIME
   - variable: EMAIL_SERVER_PASSWORD
     secret: email-server-password
+    availability: 
+      - BUILD
+      - RUNTIME
   - variable: EMAIL_FROM_NAME
     value: "Snooker Kingdom Booking"
     availability:
