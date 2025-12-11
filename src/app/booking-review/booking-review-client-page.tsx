@@ -150,7 +150,7 @@ export function BookingReviewClientPage({ settings, initialReservations }: Booki
           <CardDescription>此頁面僅供預覽，不可預約。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             {pricingTiers.map((tier, index) => (
               <Card key={index} className="text-center p-3 border-2 border-dashed">
                 <p className="text-sm text-muted-foreground">{tier.title}</p>
