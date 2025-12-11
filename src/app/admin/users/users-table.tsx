@@ -1,6 +1,7 @@
+
 'use client';
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -11,7 +12,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { MoreHorizontal, Loader2, Database, PlayCircle, Phone, Mail, FilterX, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { updateUserCF, adjustUserTokensCF, resetUserPasswordCF, deleteUserCF, type User } from './actions';
+import { updateUser, adjustUserTokens, resetUserPassword, deleteUser, type User } from './actions';
 
 type UsersTableProps = {
   initialUsers: User[];
@@ -19,10 +20,6 @@ type UsersTableProps = {
 
 export function UsersTable({ initialUsers }: UsersTableProps) {
   const [users, setUsers] = useState<User[]>(initialUsers);
-  useEffect(() => {
-    setUsers(initialUsers);
-  }, [initialUsers]);
-
   const { toast } = useToast();
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -67,7 +64,7 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
         fpsPayerNames: currentFpsNames,
       };
 
-      const result = await updateUserCF(selectedUser.id, updatedData);
+      const result = await updateUser(selectedUser.id, updatedData);
 
       if (result.success) {
         toast({ title: '成功', description: '使用者資料已在後端更新。' });
@@ -95,7 +92,7 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
     setIsSubmitting(true);
     const adjustment = Number(tokenAdjustment) || 0;
     try {
-      const result = await adjustUserTokensCF(selectedUser.id, adjustment);
+      const result = await adjustUserTokens(selectedUser.id, adjustment);
       if (result.success) {
         toast({ title: '成功', description: `餘額已在後端調整。` });
 
@@ -138,7 +135,7 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
     setIsSubmitting(true);
     try {
       // In a real app, this would call Firebase Auth. We simulate the request.
-      const result = await resetUserPasswordCF(selectedUser.email);
+      const result = await resetUserPassword(selectedUser.email);
       if (result.success) {
         toast({ title: '請求已送出', description: `已為 ${selectedUser.email} 觸發密碼重設流程。使用者將會收到一封郵件。` });
         setIsResetPasswordOpen(false);
@@ -156,7 +153,7 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
     if (!selectedUser) return;
     setIsSubmitting(true);
     
-    const result = await deleteUserCF(selectedUser.id);
+    const result = await deleteUser(selectedUser.id);
 
     if (result.success) {
       toast({ title: '刪除成功', description: `使用者 ${selectedUser.name} 已被永久刪除。` });
