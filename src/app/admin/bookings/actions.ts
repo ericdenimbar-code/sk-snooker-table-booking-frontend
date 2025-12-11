@@ -1,4 +1,3 @@
-
 'use server';
 
 import { db } from '@/lib/firebase-admin';
@@ -65,16 +64,19 @@ export async function cancelReservation(
 }
 
 
-export async function resendConfirmationEmail(reservationId: string): Promise<ServerActionResponse> {
+export async function resendConfirmationEmail(qrSecret: string): Promise<ServerActionResponse> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
     
     try {
-        const reservationRef = db.collection('reservations').doc(reservationId);
-        const docSnap = await reservationRef.get();
-        if (!docSnap.exists) {
-            return { success: false, error: '找不到指定的預訂記錄。' };
+        const reservationsRef = db.collection('reservations');
+        const query = reservationsRef.where('qrSecret', '==', qrSecret).limit(1);
+        const snapshot = await query.get();
+
+        if (snapshot.empty) {
+            throw new Error('找不到與此 QR Code 相關的預訂記錄。');
         }
-        const reservation = docSnap.data() as Reservation;
+
+        const reservation = snapshot.docs[0].data() as Reservation;
 
         const settings = await getRoomSettings('1');
         if (!settings) {
@@ -94,7 +96,7 @@ export async function resendConfirmationEmail(reservationId: string): Promise<Se
         return { success: true };
 
     } catch (e: any) {
-        console.error(`Error resending email for reservation ${reservationId}:`, e);
+        console.error(`Error resending email for QR secret ${qrSecret}:`, e);
         return { success: false, error: e.message || '發生未知錯誤。' };
     }
 }

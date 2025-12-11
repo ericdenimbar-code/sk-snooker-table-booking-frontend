@@ -1,4 +1,3 @@
-
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
@@ -224,7 +223,7 @@ export default function ReservationsPage() {
       description: '請稍候。'
     });
     
-    const result = await resendConfirmationEmail(reservation.id);
+    const result = await resendConfirmationEmail(reservation.qrSecret);
     if (result.success) {
       toast({
         title: '電郵已成功發送',
@@ -383,7 +382,7 @@ export default function ReservationsPage() {
               )}
               
               {pastReservations.length === 0 && visiblePastCount === 0 && (
-                 <Button variant="outline" className="w-full" onClick={handleLoadMorePast} disabled={isLoadingPast}>
+                 <Button variant="outline" className="w-full" onClick={handleLoadMorePast} disabled={isLoadingPast || pastReservations.length === 0}>
                     {isLoadingPast ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <History className="mr-2 h-4 w-4" />}
                     載入過去的預訂
                 </Button>
@@ -470,5 +469,3 @@ function getStatus(reservation: Reservation): ReservationWithStatus['statusDispl
 
   return { text: '未使用', className: 'bg-green-200 text-green-800', sortOrder: 2 };
 }
-
-    
