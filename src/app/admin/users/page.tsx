@@ -1,12 +1,12 @@
 
 'use server';
 
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent } from "@/components/ui/card";
 import { UsersTable } from './users-table';
 import { getAllUsers } from './actions';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Terminal } from 'lucide-react';
-import { db } from '@/lib/firebase-admin';
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Terminal } from "lucide-react";
+import { db } from "@/lib/firebase-admin";
 
 
 export default async function AdminUsersPage() {

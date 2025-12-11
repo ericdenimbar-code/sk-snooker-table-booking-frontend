@@ -1,3 +1,4 @@
+
 'use client';
 
 import React, { useState, useMemo, useEffect } from 'react';
@@ -14,12 +15,13 @@ import { useToast } from '@/hooks/use-toast';
 import { updateUser, adjustUserTokens, resetUserPassword, deleteUser, type User } from './actions';
 
 type UsersTableProps = {
-  initialUsers: User[];
+  users: User[];
+  setUsers: React.Dispatch<React.SetStateAction<User[]>>;
 };
 
-export function UsersTable({ initialUsers }: UsersTableProps) {
-  const [users, setUsers] = useState<User[]>(initialUsers);
+export function UsersTable({ users: initialUsers, setUsers: setParentUsers }: UsersTableProps) {
   const { toast } = useToast();
+  const [users, setUsers] = useState<User[]>(initialUsers);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -39,11 +41,9 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
   
   const [searchTerm, setSearchTerm] = useState('');
 
-  // This effect ensures that if the parent page re-fetches data, our table's state is updated.
   useEffect(() => {
     setUsers(initialUsers);
   }, [initialUsers]);
-
 
   const handleOpenDialog = (user: User, dialogSetter: React.Dispatch<React.SetStateAction<boolean>>) => {
     setSelectedUser(user);
@@ -65,7 +65,7 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
         name: currentName,
         email: currentEmail,
         phone: currentPhone,
-        role: currentRole as User['role'],
+        role: currentRole,
         fpsPayerNames: currentFpsNames,
       };
 
@@ -73,14 +73,13 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
 
       if (result.success) {
         toast({ title: '成功', description: '使用者資料已在後端更新。' });
-
-        // Update client-side state using a functional update to avoid stale state issues.
-        setUsers(prevUsers => {
-          const updatedUsers = prevUsers.map(u => 
-            u.id === selectedUser.id ? { ...u, ...updatedData } : u
-          );
-          updatedUsers.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
-          return updatedUsers;
+        
+        setParentUsers(prevUsers => {
+            const updatedUsers = prevUsers.map(u => 
+              u.id === selectedUser.id ? { ...u, ...updatedData } : u
+            );
+            updatedUsers.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+            return updatedUsers;
         });
         
         setIsEditUserOpen(false);
@@ -103,13 +102,13 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
       if (result.success) {
         toast({ title: '成功', description: `餘額已在後端調整。` });
 
-        // Update client-side state
-        const newTokens = selectedUser.tokens + adjustment;
-        setUsers(prevUsers => prevUsers.map(u => 
-            u.id === selectedUser.id ? { ...u, tokens: newTokens } : u
-        ));
+        const newTokens = (selectedUser.tokens || 0) + adjustment;
+        setParentUsers(prevUsers => {
+            return prevUsers.map(u => 
+                u.id === selectedUser.id ? { ...u, tokens: newTokens } : u
+            );
+        });
         
-        // Also update the 'user' object in localStorage if the admin is editing themselves
         try {
             const currentUserJSON = localStorage.getItem('user');
             if (currentUserJSON) {
@@ -162,7 +161,7 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
 
     if (result.success) {
       toast({ title: '刪除成功', description: `使用者 ${selectedUser.name} 已被永久刪除。` });
-      setUsers(prevUsers => prevUsers.filter(u => u.id !== selectedUser.id));
+      setParentUsers(prevUsers => prevUsers.filter(u => u.id !== selectedUser.id));
       setIsDeleteDialogOpen(false);
     } else {
       toast({ variant: 'destructive', title: '刪除失敗', description: result.error });
@@ -361,7 +360,7 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
             <div className="grid grid-cols-4 items-center gap-4">
               <div />
               <p className="col-span-3 text-sm text-muted-foreground">
-                調整後總數：{selectedUser ? selectedUser.tokens + (Number(tokenAdjustment) || 0) : 0}
+                調整後總數：{selectedUser ? (selectedUser.tokens || 0) + (Number(tokenAdjustment) || 0) : 0}
               </p>
             </div>
           </div>

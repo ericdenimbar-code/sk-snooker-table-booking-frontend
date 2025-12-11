@@ -259,3 +259,30 @@ export async function createMultipleReservations(
 
     return { success: true, createdReservations };
 }
+
+
+export async function createPendingFpsReservation(
+  data: Omit<Reservation, 'id' | 'bookingDate' | 'qrSecret' | 'paymentMethod'>
+): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
+    
+    // Create a new reservation with 'Pending Fps Payment' status
+    const newReservation: Omit<Reservation, 'id' | 'bookingDate' | 'qrSecret'> & { status: 'Pending Fps Payment'; expiresAt: admin.firestore.Timestamp } = {
+        ...data,
+        status: 'Pending Fps Payment',
+        expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 10 * 60 * 1000) // Expires in 10 minutes
+    };
+
+    try {
+        const docRef = await db.collection('reservations').add(newReservation);
+        const createdReservation = { ...newReservation, id: docRef.id };
+        
+        revalidatePath('/new-reservation', 'page');
+        revalidatePath('/admin/bookings', 'page');
+
+        return { success: true, newReservation: createdReservation };
+    } catch (e: any) {
+        console.error("Error creating pending FPS reservation:", e);
+        return { success: false, error: e.message };
+    }
+}
