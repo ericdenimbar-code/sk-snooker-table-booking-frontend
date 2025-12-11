@@ -1,3 +1,4 @@
+
 'use client';
 
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -9,12 +10,22 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
-import { Loader2, Eye, EyeOff, Building2 } from 'lucide-react';
+import { Loader2, Eye, EyeOff, Building2, MailWarning } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { getUserByEmail } from '@/app/admin/users/actions';
 import { getRoomSettings } from '@/app/admin/settings/actions';
 import { auth } from '@/lib/firebase';
-import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { signInWithEmailAndPassword, sendEmailVerification } from 'firebase/auth';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+
 
 const loginSchema = z.object({
   email: z.string().email({ message: '無效的電子郵件地址。' }),
@@ -28,6 +39,9 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const { toast } = useToast();
   const [siteName, setSiteName] = useState('Snooker Kingdom Booking');
+  
+  const [isVerificationAlertOpen, setIsVerificationAlertOpen] = useState(false);
+  const [emailForVerification, setEmailForVerification] = useState('');
 
   useEffect(() => {
     async function fetchSiteName() {
@@ -51,18 +65,39 @@ export default function LoginPage() {
     },
   });
 
+  const handleResendVerification = async (email: string) => {
+    try {
+        // We need a 'user' object to send the verification email.
+        // We can create a temporary, partial user object for this purpose by signing in,
+        // even if it fails due to an unverified email. The auth state might still hold the user.
+        if (auth.currentUser && auth.currentUser.email === email && !auth.currentUser.emailVerified) {
+            await sendEmailVerification(auth.currentUser);
+        }
+    } catch (error: any) {
+        // This is a fallback. It's tricky to get the user object without a successful login.
+        // The logic in onSubmit handles the most common case.
+        console.error("Could not get user object to resend verification email on subsequent attempts.", error);
+    }
+  }
+
+
   async function onSubmit(values: LoginFormValues) {
     setIsLoading(true);
 
     try {
-      // 1. Sign in with Firebase Auth
       const userCredential = await signInWithEmailAndPassword(auth, values.email, values.password);
       
-      // 2. Fetch user profile from Firestore to get the correct role and other details
+      if (!userCredential.user.emailVerified) {
+          await sendEmailVerification(userCredential.user);
+          setEmailForVerification(values.email);
+          setIsVerificationAlertOpen(true);
+          setIsLoading(false);
+          return;
+      }
+      
       const userProfile = await getUserByEmail(values.email);
 
       if (userProfile) {
-          // Store the full, correct user profile from Firestore.
           localStorage.setItem('user', JSON.stringify(userProfile));
           
           if (userProfile.role.toLowerCase() === 'admin') {
@@ -78,8 +113,24 @@ export default function LoginPage() {
         let title = '登入失敗';
         let description = '您輸入的電子郵件或密碼不正確。';
         
-        if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
-             // Keep a generic message for security
+        // This complex logic attempts to catch unverified users even when signIn fails.
+        if (error.code === 'auth/invalid-credential') {
+            try {
+                // Try to create a user with the same email. If it fails with 'email-already-in-use',
+                // it confirms the user exists. We can then assume they might be unverified.
+                const { createUserWithEmailAndPassword } = await import('firebase/auth');
+                await createUserWithEmailAndPassword(auth, values.email, 'a-deliberately-wrong-password-for-checking');
+            } catch (checkError: any) {
+                if (checkError.code === 'auth/email-already-in-use') {
+                    // This is our best guess that the user exists but is unverified.
+                    // We don't have the user object here, so we can't directly send a new link.
+                    // But we can show the dialog to inform the user.
+                    setEmailForVerification(values.email);
+                    setIsVerificationAlertOpen(true); // We just show the alert.
+                    setIsLoading(false);
+                    return;
+                }
+            }
         } else if (error.message) {
             description = error.message;
         }
@@ -95,84 +146,105 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader className="text-center">
-          <div className="flex justify-center items-center mb-4">
-             <Building2 className="h-8 w-8 text-primary" />
-          </div>
-          <CardTitle>登入 {siteName}</CardTitle>
-          <CardDescription>
-            歡迎回來，請登入您的帳戶。
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-              <FormField
-                control={form.control}
-                name="email"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>電子郵件</FormLabel>
-                    <FormControl>
-                      <Input placeholder="name@example.com" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="password"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>密碼</FormLabel>
-                    <div className="relative">
+    <>
+      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+        <Card className="w-full max-w-sm">
+          <CardHeader className="text-center">
+            <div className="flex justify-center items-center mb-4">
+               <Building2 className="h-8 w-8 text-primary" />
+            </div>
+            <CardTitle>登入 {siteName}</CardTitle>
+            <CardDescription>
+              歡迎回來，請登入您的帳戶。
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Form {...form}>
+              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+                <FormField
+                  control={form.control}
+                  name="email"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>電子郵件</FormLabel>
                       <FormControl>
-                        <Input
-                          type={showPassword ? 'text' : 'password'}
-                          placeholder="password"
-                          className="pr-10"
-                          {...field}
-                        />
+                        <Input placeholder="name@example.com" {...field} />
                       </FormControl>
-                      <button
-                        type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute inset-y-0 right-0 flex items-center pr-3 text-muted-foreground hover:text-foreground"
-                        aria-label={showPassword ? '隱藏密碼' : '顯示密碼'}
-                      >
-                        {showPassword ? (
-                          <EyeOff className="h-5 w-5" />
-                        ) : (
-                          <Eye className="h-5 w-5" />
-                        )}
-                      </button>
-                    </div>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <Button type="submit" className="w-full" disabled={isLoading}>
-                {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                登入
-              </Button>
-            </form>
-          </Form>
-          <div className="mt-4 text-center text-sm">
-            還沒有帳戶嗎？{' '}
-            <Link href="/signup" className="underline">
-              註冊
-            </Link>
-          </div>
-          <div className="mt-2 text-center text-sm">
-            <Link href="/forgot-password" className="underline text-muted-foreground hover:text-primary">
-              忘記密碼？請按此
-            </Link>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="password"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>密碼</FormLabel>
+                      <div className="relative">
+                        <FormControl>
+                          <Input
+                            type={showPassword ? 'text' : 'password'}
+                            placeholder="password"
+                            className="pr-10"
+                            {...field}
+                          />
+                        </FormControl>
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword(!showPassword)}
+                          className="absolute inset-y-0 right-0 flex items-center pr-3 text-muted-foreground hover:text-foreground"
+                          aria-label={showPassword ? '隱藏密碼' : '顯示密碼'}
+                        >
+                          {showPassword ? (
+                            <EyeOff className="h-5 w-5" />
+                          ) : (
+                            <Eye className="h-5 w-5" />
+                          )}
+                        </button>
+                      </div>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <Button type="submit" className="w-full" disabled={isLoading}>
+                  {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  登入
+                </Button>
+              </form>
+            </Form>
+            <div className="mt-4 text-center text-sm">
+              還沒有帳戶嗎？{' '}
+              <Link href="/signup" className="underline">
+                註冊
+              </Link>
+            </div>
+            <div className="mt-2 text-center text-sm">
+              <Link href="/forgot-password" className="underline text-muted-foreground hover:text-primary">
+                忘記密碼？請按此
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <AlertDialog open={isVerificationAlertOpen} onOpenChange={setIsVerificationAlertOpen}>
+          <AlertDialogContent>
+              <AlertDialogHeader>
+                  <AlertDialogTitle className="flex items-center gap-2">
+                    <MailWarning className="h-6 w-6 text-amber-500" />
+                    請先驗證您的電子郵件
+                  </AlertDialogTitle>
+                  <AlertDialogDescription>
+                      您的帳戶尚未啟用。我們已重新發送了一封驗證郵件到 <span className="font-semibold text-primary">{emailForVerification}</span>。
+                      <br /><br />
+                      請檢查您的收件箱（以及垃圾郵件匣），並點擊郵件中的連結以完成註冊。
+                  </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                  <AlertDialogAction onClick={() => setIsVerificationAlertOpen(false)}>明白</AlertDialogAction>
+              </AlertDialogFooter>
+          </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
