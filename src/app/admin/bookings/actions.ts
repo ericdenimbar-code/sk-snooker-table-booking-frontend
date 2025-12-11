@@ -1,10 +1,11 @@
+
 'use server';
 
 import { db } from '@/lib/firebase-admin';
 import { revalidatePath } from 'next/cache';
 import { getUserByEmail } from '@/app/admin/users/actions';
 import { deleteGoogleCalendarEvent } from '@/lib/google-calendar';
-import type { Reservation } from '@/types';
+import type { Reservation, TemporaryAccess } from '@/types';
 import qrcode from 'qrcode';
 import { sendQrCodeEmail } from '@/lib/email';
 import { getRoomSettings } from '@/app/admin/settings/actions';
@@ -52,8 +53,11 @@ export async function cancelReservation(
         await deleteGoogleCalendarEvent(reservation);
 
         // Revalidate paths to update caches
-        revalidatePath('/admin/bookings');
-        revalidatePath('/reservations');
+        revalidatePath('/admin/bookings', 'page');
+        revalidatePath('/reservations', 'page');
+        if (user) {
+            revalidatePath(`/admin/users`);
+        }
 
         return { success: true };
 

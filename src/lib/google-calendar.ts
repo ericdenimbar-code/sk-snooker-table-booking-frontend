@@ -147,7 +147,6 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
 
     const isTempAccess = 'validFrom' in reservation;
     
-    // --- START: Absolute Safe Data Extraction ---
     let eventSummary: string;
     let userIdentifier: string;
     let qrSecret: string;
@@ -156,24 +155,18 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
     let roomIdForSlotFinding: '1' | '2';
     
     if (isTempAccess) {
-        // It's a TemporaryAccess object
         const tempAccess = reservation as TemporaryAccess;
         userIdentifier = tempAccess.userEmail;
         eventSummary = userIdentifier.split('@')[0];
-        qrSecret = tempAccess.id; // For temp access, the ID is the secret
-        
-        // --- TIMEZONE FIX: Use original ISO string as it's timezone-aware
+        qrSecret = tempAccess.id;
         bookingStart = parseISO(tempAccess.validFrom);
         bookingEnd = parseISO(tempAccess.validUntil);
-        roomIdForSlotFinding = '1'; // Default to room 1's rotation for any temp access
+        roomIdForSlotFinding = '1'; 
     } else {
-        // It's a Reservation object
         const regularReservation = reservation as Reservation;
         userIdentifier = regularReservation.userName;
         eventSummary = regularReservation.userName;
         qrSecret = regularReservation.qrSecret;
-        
-        // --- TIMEZONE FIX: Append +08:00 to force correct parsing on UTC server
         bookingStart = parseISO(`${regularReservation.date}T${regularReservation.startTime}:00+08:00`);
         bookingEnd = parseISO(`${regularReservation.date}T${regularReservation.endTime}:00+08:00`);
 
@@ -184,12 +177,10 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
     }
     
     if (!qrSecret) {
-        console.error("Cannot create calendar event: ID/QR Secret is missing.");
+        console.error(`Cannot create calendar event: QR Secret is missing for reservation ${reservation.id}`);
         return false;
     }
-    // --- END: Absolute Safe Data Extraction ---
 
-    // --- Create Main Calendar Event for Regular Reservations ---
     if (!isTempAccess) {
         const mainCalendarId = getCalendarIdBySlot(roomIdForSlotFinding);
         if (mainCalendarId) {
@@ -203,7 +194,6 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
         }
     }
     
-    // --- Create Door Control Calendar Event with Time Buffer ---
     const doorControlStart = isTempAccess ? bookingStart : sub(bookingStart, { minutes: 15 });
     const doorControlEnd = isTempAccess ? bookingEnd : add(bookingEnd, { minutes: 15 });
 
@@ -217,7 +207,7 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
         const doorCalendarId = getCalendarIdBySlot(availableSlot);
         if (doorCalendarId) {
             await createEvent(doorCalendarId, {
-                summary: qrSecret, // KEY FIX: The summary for door control is ALWAYS the secret.
+                summary: qrSecret,
                 description: `User: ${userIdentifier} | Ref: ${reservation.id} | Slot: ${availableSlot}`,
                 start: doorControlStart.toISOString(),
                 end: doorControlEnd.toISOString(),
@@ -226,21 +216,20 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
             return true;
         }
     } else {
-        // Fallback logic if no clean slot is found
         console.error(`No available A/B slot found for room ${roomIdForSlotFinding} at the requested time.`);
         const fallbackSlot: Slot = roomIdForSlotFinding === '1' ? '1A' : '2A';
         const fallbackCalendarId = getCalendarIdBySlot(fallbackSlot);
         if (fallbackCalendarId) {
             console.warn(`Falling back to primary slot ${fallbackSlot} for door control.`);
             await createEvent(fallbackCalendarId, {
-                summary: qrSecret, // KEY FIX: Also use secret in fallback
+                summary: qrSecret,
                 description: `User: ${userIdentifier} | Ref: ${reservation.id} | SLOT FALLBACK`,
                 start: doorControlStart.toISOString(),
                 end: doorControlEnd.toISOString(),
                 eventId: reservation.id,
             });
         }
-        return false; // Still return false as this is a degraded state
+        return false;
     }
     
     return false;
@@ -260,16 +249,16 @@ export async function deleteGoogleCalendarEvent(reservation: Reservation | Tempo
             await calendar.events.delete({ calendarId, eventId: sanitizedEventId });
             console.log(`Successfully deleted event ${sanitizedEventId} from calendar ${calendarId}`);
         } catch (error: any) {
-            if (error.code !== 404) { // Don't log an error if the event simply wasn't found
+            if (error.code !== 404) {
                 console.warn(`Could not delete event ${sanitizedEventId} from ${calendarId}: ${error.message}`);
             }
         }
     };
     
     if ('validFrom' in reservation) {
-        const allDoorCalendars = [CALENDAR_ID_DOOR_CONTROL_1A, CALENDAR_ID_DOOR_CONTROL_1B, CALENDAR_ID_DOOR_CONTROL_2A, CALENDAR_ID_DOOR_CONTROL_2B].filter(Boolean);
+        const allDoorCalendars = [CALENDAR_ID_DOOR_CONTROL_1A, CALENDAR_ID_DOOR_CONTROL_1B, CALENDAR_ID_DOOR_CONTROL_2A, CALENDAR_ID_DOOR_CONTROL_2B].filter(Boolean) as string[];
         for (const calId of allDoorCalendars) {
-            await tryDelete(calId as string);
+            await tryDelete(calId);
         }
         console.log(`Attempted deletion of temp access event ${eventId} from all door calendars.`);
         return true;
