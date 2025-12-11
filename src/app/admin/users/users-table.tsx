@@ -1,7 +1,6 @@
-
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -40,6 +39,12 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
   
   const [searchTerm, setSearchTerm] = useState('');
 
+  // This effect ensures that if the parent page re-fetches data, our table's state is updated.
+  useEffect(() => {
+    setUsers(initialUsers);
+  }, [initialUsers]);
+
+
   const handleOpenDialog = (user: User, dialogSetter: React.Dispatch<React.SetStateAction<boolean>>) => {
     setSelectedUser(user);
     if (dialogSetter === setIsEditUserOpen) {
@@ -69,12 +74,14 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
       if (result.success) {
         toast({ title: '成功', description: '使用者資料已在後端更新。' });
 
-        // Update client-side state
-        const updatedUsers = users.map(u => 
-          u.id === selectedUser.id ? { ...u, ...updatedData } : u
-        );
-        updatedUsers.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
-        setUsers(updatedUsers);
+        // Update client-side state using a functional update to avoid stale state issues.
+        setUsers(prevUsers => {
+          const updatedUsers = prevUsers.map(u => 
+            u.id === selectedUser.id ? { ...u, ...updatedData } : u
+          );
+          updatedUsers.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+          return updatedUsers;
+        });
         
         setIsEditUserOpen(false);
       } else {
@@ -98,10 +105,9 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
 
         // Update client-side state
         const newTokens = selectedUser.tokens + adjustment;
-        const updatedUsers = users.map(u => 
-          u.id === selectedUser.id ? { ...u, tokens: newTokens } : u
-        );
-        setUsers(updatedUsers);
+        setUsers(prevUsers => prevUsers.map(u => 
+            u.id === selectedUser.id ? { ...u, tokens: newTokens } : u
+        ));
         
         // Also update the 'user' object in localStorage if the admin is editing themselves
         try {
@@ -134,7 +140,6 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
     if (!selectedUser) return;
     setIsSubmitting(true);
     try {
-      // In a real app, this would call Firebase Auth. We simulate the request.
       const result = await resetUserPassword(selectedUser.email);
       if (result.success) {
         toast({ title: '請求已送出', description: `已為 ${selectedUser.email} 觸發密碼重設流程。使用者將會收到一封郵件。` });
@@ -157,7 +162,7 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
 
     if (result.success) {
       toast({ title: '刪除成功', description: `使用者 ${selectedUser.name} 已被永久刪除。` });
-      setUsers(users.filter(u => u.id !== selectedUser.id));
+      setUsers(prevUsers => prevUsers.filter(u => u.id !== selectedUser.id));
       setIsDeleteDialogOpen(false);
     } else {
       toast({ variant: 'destructive', title: '刪除失敗', description: result.error });
