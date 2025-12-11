@@ -1,66 +1,69 @@
+
 'use server';
 
 import { db } from '@/lib/firebase-admin';
 import { revalidatePath } from 'next/cache';
-import { getUserByEmail, adjustUserTokens } from '@/app/admin/users/actions';
+import { getUserByEmail } from '@/app/admin/users/actions';
 import { deleteGoogleCalendarEvent } from '@/lib/google-calendar';
 import type { Reservation } from '@/types';
 import qrcode from 'qrcode';
 import { sendQrCodeEmail } from '@/lib/email';
 import { getRoomSettings } from '@/app/admin/settings/actions';
+import admin from 'firebase-admin';
 
 type ServerActionResponse = {
     success: boolean;
     error?: string;
 };
 
+// This function is now the single source of truth for cancelling a reservation.
 export async function cancelReservation(
     reservation: Reservation,
     refund: boolean = true
 ): Promise<ServerActionResponse> {
-    if (!db) return { success: false, error: '後端資料庫未連接。' };
-    
-    const user = await getUserByEmail(reservation.userEmail);
-    
-    let amountToRefund = 0;
-    if (refund) {
-        if (!user || !user.id) {
-            console.warn(`Cannot process refund for reservation ${reservation.id}: User ${reservation.userEmail} not found.`);
-        } else {
-            if (reservation.paymentMethod === 'mixed' && reservation.amountPaidWithTokens) {
+    if (!db) {
+        return { success: false, error: '後端資料庫未連接。' };
+    }
+
+    try {
+        const user = await getUserByEmail(reservation.userEmail);
+        
+        let amountToRefund = 0;
+        if (refund && user) {
+             if (reservation.paymentMethod === 'mixed' && reservation.amountPaidWithTokens) {
                 amountToRefund = reservation.amountPaidWithTokens;
             } else if (reservation.paymentMethod === 'tokens') {
                 amountToRefund = reservation.costInTokens;
             }
         }
-    }
-    
-    const reservationRef = db.collection('reservations').doc(reservation.id);
-    
-    try {
+        
+        // Use a transaction to ensure atomicity
         await db.runTransaction(async (transaction) => {
+            const reservationRef = db.collection('reservations').doc(reservation.id);
             transaction.update(reservationRef, { status: 'Cancelled' });
-            
-            if (amountToRefund > 0 && user && user.id) {
+
+            if (amountToRefund > 0 && user) {
                 const userRef = db.collection('users').doc(user.id);
-                const userDoc = await transaction.get(userRef);
-                const currentTokens = userDoc.data()?.tokens ?? 0;
-                transaction.update(userRef, { tokens: currentTokens + amountToRefund });
+                // Use atomic increment for safer token refunds
+                transaction.update(userRef, { tokens: admin.firestore.FieldValue.increment(amountToRefund) });
             }
         });
-
-        await deleteGoogleCalendarEvent(reservation.id, reservation.roomId as '1' | '2');
         
-        revalidatePath('/admin/bookings', 'page');
-        if (user && user.id) revalidatePath('/admin/users');
+        // After the transaction is successful, delete the calendar event
+        await deleteGoogleCalendarEvent(reservation);
+
+        // Revalidate paths to update caches
+        revalidatePath('/admin/bookings');
+        revalidatePath('/reservations');
 
         return { success: true };
 
     } catch (e: any) {
-        console.error(`Failed to cancel reservation ${reservation.id} transactionally:`, e);
+        console.error(`Failed to cancel reservation ${reservation.id}:`, e);
         return { success: false, error: `更新預訂狀態或退款時發生錯誤: ${e.message}` };
     }
 }
+
 
 export async function resendConfirmationEmail(reservationId: string): Promise<ServerActionResponse> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
