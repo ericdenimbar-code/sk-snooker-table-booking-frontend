@@ -2,7 +2,7 @@
 
 import { Card, CardContent } from '@/components/ui/card';
 import { UsersTable } from './users-table';
-import { getAllUsers } from './actions';
+import { getAllUsersCF } from './actions';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Terminal } from 'lucide-react';
 import { db } from '@/lib/firebase-admin';
@@ -25,7 +25,7 @@ export default async function AdminUsersPage() {
         )
     }
 
-    const result = await getAllUsers();
+    const result = await getAllUsersCF();
     
     if (!result.success || !result.users) {
         return (
