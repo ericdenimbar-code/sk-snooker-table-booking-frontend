@@ -347,18 +347,17 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
             <DialogHeader>
                 <DialogTitle>付款資訊</DialogTitle>
                 <DialogDescription asChild>
-                    <div className="text-center pt-2">
+                    <div className="space-y-1 text-center">
                         <p>感謝您的增值請求</p>
                         <p>請使用您的銀行 App 掃描以下 FPS QR Code，或手動轉帳款項</p>
-                        <p className="text-2xl font-bold text-primary my-2">HKD ${pendingRequestInfo?.price.toFixed(2)}</p>
-                        <p>至以下帳戶。當我們確認收到款項後，會立即幫你充值。您無需上傳任何證明。</p>
+                        <p className="text-2xl font-bold text-primary py-1">HKD ${pendingRequestInfo?.price.toFixed(2)}</p>
+                        <p>當我們確認收到款項後，會立即幫你充值。您無需上傳任何證明。</p>
                     </div>
                 </DialogDescription>
             </DialogHeader>
-            <div className="my-4 space-y-4">
+            <div className="my-2 space-y-3">
               {paymentInfo.staticFpsQrCodeUrl ? (
-                <div className="text-center space-y-2">
-                  <p className="text-sm font-semibold">請掃描 FPS QR Code</p>
+                <div className="text-center">
                   <div className="mx-auto bg-white p-2 border rounded-md inline-block">
                     <Image src={paymentInfo.staticFpsQrCodeUrl} alt="Static FPS QR Code" width={200} height={200} />
                   </div>
@@ -368,10 +367,9 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
                     管理員尚未上傳收款 QR Code。
                 </div>
               )}
-               <div className="text-center space-y-2 border-t pt-4">
+               <div className="text-center space-y-1 border-t pt-3">
                  <p className="text-sm text-muted-foreground">或手動輸入：</p>
                  <p><span className="font-semibold">FPS 號碼：</span><span className="text-lg font-bold">{paymentInfo.fpsNumber || 'N/A'}</span></p>
-                 <p><span className="font-semibold">收款銀行：</span><span className="text-lg font-bold">{paymentInfo.bankName || 'N/A'}</span></p>
                  <p><span className="font-semibold">收款戶口名稱：</span><span className="text-lg font-bold">{paymentInfo.accountHolderName || 'N/A'}</span></p>
                  <p className="text-xs text-muted-foreground pt-2">請在轉帳時於備註欄輸入您的請求參考編號: <span className="font-mono bg-muted px-1.5 py-0.5 rounded">{pendingRequestInfo?.id}</span></p>
                </div>
