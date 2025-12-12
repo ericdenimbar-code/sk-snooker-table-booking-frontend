@@ -8,6 +8,9 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Terminal } from 'lucide-react';
 import { db } from '@/lib/firebase-admin';
 
+// This directive forces the page to be dynamically rendered on every request.
+// It ensures that getAllUsers() is always called, fetching fresh data from the database.
+export const dynamic = 'force-dynamic';
 
 export default async function AdminUsersPage() {
 
