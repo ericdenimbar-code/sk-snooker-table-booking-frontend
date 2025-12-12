@@ -1,6 +1,4 @@
 
-'use server';
-
 import { Card, CardContent } from '@/components/ui/card';
 import { UsersTable } from './users-table';
 import { getAllUsers } from './actions';
