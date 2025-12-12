@@ -232,7 +232,7 @@ export function RequestsTable({ initialRequests }: RequestsTableProps) {
                                                 case 'requesting':
                                                     return <Badge variant="outline" className="text-amber-600 border-amber-500">要求中</Badge>;
                                                 case 'processing':
-                                                    return <Badge className="bg-blue-600 text-primary-foreground hover:bg-blue-600/80 border-transparent">處理中</Badge>;
+                                                    return <Badge className="bg-blue-600 text-primary-foreground hover:bg-blue-600/80 border-transparent">等待批核</Badge>;
                                                 case 'completed':
                                                     return <Badge className="bg-green-600 text-primary-foreground hover:bg-green-600/80 border-transparent">已完成</Badge>;
                                                 case 'cancelled':

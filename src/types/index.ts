@@ -18,6 +18,7 @@ export type Reservation = {
   paymentMethod: 'tokens' | 'fps' | 'mixed'; // How the booking was paid for
   amountPaidWithTokens?: number;
   amountPaidWithFps?: number;
+  expiresAt?: admin.firestore.Timestamp; // For pending payments, use Firestore Timestamp
 };
 
 export type TemporaryAccess = {

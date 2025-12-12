@@ -11,7 +11,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import type { RoomSettings, NewReservationPageContent, PricingTier, SlotData, PaymentInfo } from './actions';
 import { updateRoomSettings, updatePaymentInfo } from './actions';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Info, ImagePlus, X } from 'lucide-react';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 
 type SettingsPanelProps = {
   roomName: string;
@@ -226,6 +227,23 @@ export function SettingsForm({ initialRoom1Settings, initialRoom2Settings, initi
     setPaymentInfo(prev => ({ ...prev, [field]: value }));
   };
 
+  const handleQrCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && file.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        handlePaymentInfoChange('staticFpsQrCodeUrl', reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    } else if (file) {
+      toast({
+        variant: 'destructive',
+        title: '檔案類型錯誤',
+        description: '請選擇一個圖片檔案。',
+      });
+    }
+  };
+
   const handlePaymentInfoSubmit = async () => {
     setIsSubmitting(true);
     const result = await updatePaymentInfo(paymentInfo);
@@ -248,33 +266,105 @@ export function SettingsForm({ initialRoom1Settings, initialRoom2Settings, initi
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>全域付款資訊設定</CardTitle>
-          <CardDescription>設定使用者在提交增值請求後看到的轉帳資訊。此設定為全站共用。</CardDescription>
+          <CardTitle>全域付款及電郵伺服器設定</CardTitle>
+          <CardDescription>設定使用者在提交增值請求後看到的轉帳資訊，以及系統發送郵件所使用的 SMTP 伺服器。此設定為全站共用。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-           <div className="grid gap-1.5">
-            <Label htmlFor="fps-number">FPS 收款電話號碼</Label>
-            <Input
-              id="fps-number"
-              value={paymentInfo.fpsNumber || ''}
-              onChange={e => handlePaymentInfoChange('fpsNumber', e.target.value)}
-              placeholder="例如：98765432"
-            />
-             <p className="text-xs text-muted-foreground">此號碼將用於生成 FPS QR Code。</p>
+            <Alert>
+                <Info className="h-4 w-4" />
+                <AlertTitle>重要提示：關於應用程式密碼</AlertTitle>
+                <AlertDescription>
+                    基於安全理由，系統**不會**顯示您已儲存的電郵伺服器密碼。如需更新密碼，請直接在下方欄位輸入新的 Google「應用程式密碼」。如果留空，則會沿用舊有密碼。
+                </AlertDescription>
+            </Alert>
+           <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-1.5">
+                    <Label htmlFor="fps-number">FPS 收款電話號碼</Label>
+                    <Input
+                    id="fps-number"
+                    value={paymentInfo.fpsNumber || ''}
+                    onChange={e => handlePaymentInfoChange('fpsNumber', e.target.value)}
+                    placeholder="例如：98765432"
+                    />
+                </div>
+                 <div className="grid gap-1.5">
+                    <Label htmlFor="email-from-name">寄件人顯示名稱</Label>
+                    <Input
+                    id="email-from-name"
+                    value={paymentInfo.emailFromName || ''}
+                    onChange={e => handlePaymentInfoChange('emailFromName', e.target.value)}
+                    placeholder="例如：Snooker Kingdom Booking"
+                    />
+                </div>
+           </div>
+          <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="accountHolderName">收款方戶口持有人姓名</Label>
+                <Input
+                  id="accountHolderName"
+                  value={paymentInfo.accountHolderName || ''}
+                  onChange={e => handlePaymentInfoChange('accountHolderName', e.target.value)}
+                  placeholder="例如：CHAN T** M***"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="bankName">收款方銀行</Label>
+                <Input
+                  id="bankName"
+                  value={paymentInfo.bankName || ''}
+                  onChange={e => handlePaymentInfoChange('bankName', e.target.value)}
+                  placeholder="例如：HSBC"
+                />
+              </div>
           </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="payment-info">銀行轉帳資訊 (後備)</Label>
-            <Textarea
-              id="payment-info"
-              value={paymentInfo.bankDetails}
-              onChange={e => handlePaymentInfoChange('bankDetails', e.target.value)}
-              className="min-h-[120px] whitespace-pre-wrap"
-              placeholder="請在此處輸入您的銀行轉帳資訊 (例如：銀行名稱、戶口號碼、戶口持有人姓名)。"
-            />
+           <div className="grid gap-2">
+              <Label htmlFor="qr-code-upload">靜態 FPS 收款 QR Code</Label>
+              <div className="flex items-center gap-4">
+                {paymentInfo.staticFpsQrCodeUrl ? (
+                  <div className="relative">
+                    <img src={paymentInfo.staticFpsQrCodeUrl} alt="QR Code Preview" className="h-24 w-24 rounded-md border object-contain p-1" />
+                    <Button variant="destructive" size="icon" className="absolute -top-2 -right-2 h-6 w-6 rounded-full" onClick={() => handlePaymentInfoChange('staticFpsQrCodeUrl', '')}><X className="h-4 w-4" /></Button>
+                  </div>
+                ) : (
+                  <div className="flex h-24 w-24 items-center justify-center rounded-md border border-dashed bg-muted">
+                    <ImagePlus className="h-8 w-8 text-muted-foreground" />
+                  </div>
+                )}
+                <Input
+                  id="qr-code-upload"
+                  type="file"
+                  accept="image/png, image/jpeg"
+                  onChange={handleQrCodeChange}
+                  className="max-w-xs"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                上傳由您的銀行 App 產生的永久性收款 QR Code 圖片。
+              </p>
+            </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-1.5">
+                <Label htmlFor="email-user">電郵伺服器用戶名稱 (Gmail)</Label>
+                <Input
+                id="email-user"
+                value={paymentInfo.emailServerUser || ''}
+                onChange={e => handlePaymentInfoChange('emailServerUser', e.target.value)}
+                placeholder="your-email@gmail.com"
+                />
+            </div>
+            <div className="grid gap-1.5">
+                <Label htmlFor="email-password">電郵伺服器密碼 (Google 應用程式密碼)</Label>
+                <Input
+                id="email-password"
+                type="password"
+                onChange={e => handlePaymentInfoChange('emailServerPassword', e.target.value)}
+                placeholder="留空即沿用舊密碼"
+                />
+            </div>
           </div>
           <Button onClick={handlePaymentInfoSubmit} disabled={isSubmitting}>
             {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            儲存付款資訊
+            儲存全域設定
           </Button>
         </CardContent>
       </Card>
