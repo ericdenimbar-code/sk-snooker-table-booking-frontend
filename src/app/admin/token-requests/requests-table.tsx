@@ -23,7 +23,7 @@ export function RequestsTable({ initialRequests }: RequestsTableProps) {
     const { toast } = useToast();
     const [requests, setRequests] = useState<TokenPurchaseRequest[]>(initialRequests);
     const [searchTerm, setSearchTerm] = useState('');
-    const [statusFilter, setStatusFilter] = useState('processing');
+    const [statusFilter, setStatusFilter] = useState('all');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [selectedRequest, setSelectedRequest] = useState<TokenPurchaseRequest | null>(null);
     const [isApproveDialogOpen, setIsApproveDialogOpen] = useState(false);
@@ -86,31 +86,6 @@ export function RequestsTable({ initialRequests }: RequestsTableProps) {
             toast({ variant: 'destructive', title: '取消失敗', description: result.error });
         }
         setIsSubmitting(false);
-    };
-
-    const handleViewProof = (request: TokenPurchaseRequest) => {
-        if (!request.paymentProofUrl) return;
-
-        try {
-            const date = new Date(request.requestDate);
-            const formattedDate = format(date, 'dd_MM_yyyy');
-            const filename = `${request.userName}_${request.totalPriceHKD.toFixed(0)}_${formattedDate}_${request.id}.jpg`;
-
-            const link = document.createElement('a');
-            link.href = request.paymentProofUrl;
-            link.download = filename;
-
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        } catch (error) {
-            toast({
-                variant: 'destructive',
-                title: '下載失败',
-                description: '無法觸發檔案下載，請檢查瀏覽器權限。'
-            });
-            console.error("Failed to trigger download:", error);
-        }
     };
     
     const clearFilters = () => {
@@ -183,7 +158,7 @@ export function RequestsTable({ initialRequests }: RequestsTableProps) {
                     <SelectContent>
                         <SelectItem value="all">所有狀態</SelectItem>
                         <SelectItem value="requesting">要求中</SelectItem>
-                        <SelectItem value="processing">處理中</SelectItem>
+                        <SelectItem value="processing">等待批核</SelectItem>
                         <SelectItem value="completed">已完成</SelectItem>
                         <SelectItem value="cancelled">已取消</SelectItem>
                     </SelectContent>
@@ -260,18 +235,9 @@ export function RequestsTable({ initialRequests }: RequestsTableProps) {
                                             </PopoverTrigger>
                                             <PopoverContent className="w-auto p-1">
                                                 <div className="flex flex-col text-sm font-normal">
-                                                     <Button
-                                                        variant="ghost"
-                                                        className="justify-start px-2 py-1.5 h-auto text-sm w-full"
-                                                        disabled={!req.paymentProofUrl}
-                                                        onClick={() => handleViewProof(req)}
-                                                    >
-                                                       <Eye className="mr-2 h-4 w-4" /> 入數記錄
-                                                    </Button>
                                                     <Button
                                                         variant="ghost"
                                                         className="justify-start px-2 py-1.5 h-auto text-sm"
-                                                        disabled={req.status !== 'processing'}
                                                         onClick={() => handleOpenApproveDialog(req)}
                                                     >
                                                         <CircleDollarSign className="mr-2 h-4 w-4" /> 發放餘額
