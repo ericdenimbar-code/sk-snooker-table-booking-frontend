@@ -1,7 +1,7 @@
 
 'use client';
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -15,13 +15,12 @@ import { useToast } from '@/hooks/use-toast';
 import { updateUser, adjustUserTokens, resetUserPassword, deleteUser, type User } from './actions';
 
 type UsersTableProps = {
-  users: User[];
-  setUsers: React.Dispatch<React.SetStateAction<User[]>>;
+  initialUsers: User[];
 };
 
-export function UsersTable({ users: initialUsers, setUsers: setParentUsers }: UsersTableProps) {
-  const { toast } = useToast();
+export function UsersTable({ initialUsers }: UsersTableProps) {
   const [users, setUsers] = useState<User[]>(initialUsers);
+  const { toast } = useToast();
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -40,10 +39,6 @@ export function UsersTable({ users: initialUsers, setUsers: setParentUsers }: Us
   const [tokenAdjustment, setTokenAdjustment] = useState(0);
   
   const [searchTerm, setSearchTerm] = useState('');
-
-  useEffect(() => {
-    setUsers(initialUsers);
-  }, [initialUsers]);
 
   const handleOpenDialog = (user: User, dialogSetter: React.Dispatch<React.SetStateAction<boolean>>) => {
     setSelectedUser(user);
@@ -65,7 +60,7 @@ export function UsersTable({ users: initialUsers, setUsers: setParentUsers }: Us
         name: currentName,
         email: currentEmail,
         phone: currentPhone,
-        role: currentRole,
+        role: currentRole as User['role'],
         fpsPayerNames: currentFpsNames,
       };
 
@@ -73,14 +68,13 @@ export function UsersTable({ users: initialUsers, setUsers: setParentUsers }: Us
 
       if (result.success) {
         toast({ title: '成功', description: '使用者資料已在後端更新。' });
-        
-        setParentUsers(prevUsers => {
-            const updatedUsers = prevUsers.map(u => 
-              u.id === selectedUser.id ? { ...u, ...updatedData } : u
-            );
-            updatedUsers.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
-            return updatedUsers;
-        });
+
+        // Update client-side state
+        const updatedUsers = users.map(u => 
+          u.id === selectedUser.id ? { ...u, ...updatedData } : u
+        );
+        updatedUsers.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+        setUsers(updatedUsers);
         
         setIsEditUserOpen(false);
       } else {
@@ -102,13 +96,14 @@ export function UsersTable({ users: initialUsers, setUsers: setParentUsers }: Us
       if (result.success) {
         toast({ title: '成功', description: `餘額已在後端調整。` });
 
-        const newTokens = (selectedUser.tokens || 0) + adjustment;
-        setParentUsers(prevUsers => {
-            return prevUsers.map(u => 
-                u.id === selectedUser.id ? { ...u, tokens: newTokens } : u
-            );
-        });
+        // Update client-side state
+        const newTokens = selectedUser.tokens + adjustment;
+        const updatedUsers = users.map(u => 
+          u.id === selectedUser.id ? { ...u, tokens: newTokens } : u
+        );
+        setUsers(updatedUsers);
         
+        // Also update the 'user' object in localStorage if the admin is editing themselves
         try {
             const currentUserJSON = localStorage.getItem('user');
             if (currentUserJSON) {
@@ -139,6 +134,7 @@ export function UsersTable({ users: initialUsers, setUsers: setParentUsers }: Us
     if (!selectedUser) return;
     setIsSubmitting(true);
     try {
+      // In a real app, this would call Firebase Auth. We simulate the request.
       const result = await resetUserPassword(selectedUser.email);
       if (result.success) {
         toast({ title: '請求已送出', description: `已為 ${selectedUser.email} 觸發密碼重設流程。使用者將會收到一封郵件。` });
@@ -161,7 +157,7 @@ export function UsersTable({ users: initialUsers, setUsers: setParentUsers }: Us
 
     if (result.success) {
       toast({ title: '刪除成功', description: `使用者 ${selectedUser.name} 已被永久刪除。` });
-      setParentUsers(prevUsers => prevUsers.filter(u => u.id !== selectedUser.id));
+      setUsers(users.filter(u => u.id !== selectedUser.id));
       setIsDeleteDialogOpen(false);
     } else {
       toast({ variant: 'destructive', title: '刪除失敗', description: result.error });
@@ -360,7 +356,7 @@ export function UsersTable({ users: initialUsers, setUsers: setParentUsers }: Us
             <div className="grid grid-cols-4 items-center gap-4">
               <div />
               <p className="col-span-3 text-sm text-muted-foreground">
-                調整後總數：{selectedUser ? (selectedUser.tokens || 0) + (Number(tokenAdjustment) || 0) : 0}
+                調整後總數：{selectedUser ? selectedUser.tokens + (Number(tokenAdjustment) || 0) : 0}
               </p>
             </div>
           </div>
