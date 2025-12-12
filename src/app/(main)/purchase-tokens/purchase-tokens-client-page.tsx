@@ -345,9 +345,14 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
        <Dialog open={isInfoDialogOpen} onOpenChange={handleInfoDialogClose}>
         <DialogContent>
             <DialogHeader>
-                <DialogTitle>感謝您的增值請求</DialogTitle>
-                <DialogDescription>
-                    請使用您的銀行 App 掃描以下 FPS QR Code，或手動轉帳款項 <span className="font-bold text-primary">HKD ${pendingRequestInfo?.price.toFixed(2)}</span> 至以下帳戶。當我們確認收到款項後，會立即幫你充值。您無需上傳任何證明。
+                <DialogTitle>付款資訊</DialogTitle>
+                <DialogDescription asChild>
+                    <div className="text-center pt-2">
+                        <p>感謝您的增值請求</p>
+                        <p>請使用您的銀行 App 掃描以下 FPS QR Code，或手動轉帳款項</p>
+                        <p className="text-2xl font-bold text-primary my-2">HKD ${pendingRequestInfo?.price.toFixed(2)}</p>
+                        <p>至以下帳戶。當我們確認收到款項後，會立即幫你充值。您無需上傳任何證明。</p>
+                    </div>
                 </DialogDescription>
             </DialogHeader>
             <div className="my-4 space-y-4">
