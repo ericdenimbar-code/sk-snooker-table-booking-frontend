@@ -55,8 +55,9 @@ export async function sendQrCodeEmail(
         html: `
             <div style="font-family: Arial, sans-serif; line-height: 1.6;">
                 <h2>感謝您的預訂！</h2>
-                <p>親愛的 ${reservation.userName}，</p>
+                <p>您好 ${reservation.userName}，</p>
                 <p>您的預訂已成功確認。請在預約時間到達時，使用以下 QR Code 掃描門口的裝置以進入。</p>
+                <p>如相關 QR code 沒接收/開啟有問題，您亦可在我們的預訂網站"我的預訂"中，按顯示入場二維碼找到相關 QR Code 掃描門口的裝置以進入。</p>
                 <hr>
                 <h3>預訂詳情：</h3>
                 <ul>
