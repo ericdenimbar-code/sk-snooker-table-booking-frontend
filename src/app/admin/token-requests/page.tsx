@@ -1,3 +1,4 @@
+
 'use server';
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,6 +7,10 @@ import { Terminal } from 'lucide-react';
 import { getAllTokenPurchaseRequests } from './actions';
 import { RequestsTable } from './requests-table';
 import { db } from '@/lib/firebase-admin';
+
+// This directive forces the page to be dynamically rendered on every request.
+// It ensures that getAllTokenPurchaseRequests() is always called, fetching fresh data from the database.
+export const dynamic = 'force-dynamic';
 
 export default async function AdminTokenRequestsPage() {
 
