@@ -1,3 +1,4 @@
+
 'use client';
 
 import React, { useState, useMemo, useEffect } from 'react';
@@ -11,8 +12,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogClose } from '@/components/ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { MoreHorizontal, Loader2, Info, Mail, Phone, Hash, Eye, CircleDollarSign, Ban, FilterX } from "lucide-react";
-import { approveTokenPurchaseRequest, cancelTokenPurchaseRequest } from './actions';
+import { MoreHorizontal, Loader2, Info, Mail, Phone, Hash, Eye, CircleDollarSign, Ban, FilterX, MailCheck } from "lucide-react";
+import { approveTokenPurchaseRequest, cancelTokenPurchaseRequest, triggerGmailCheck } from './actions';
 import { Skeleton } from '@/components/ui/skeleton';
 
 type RequestsTableProps = {
@@ -25,6 +26,7 @@ export function RequestsTable({ initialRequests }: RequestsTableProps) {
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState('all');
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [isSyncing, setIsSyncing] = useState(false);
     const [selectedRequest, setSelectedRequest] = useState<TokenPurchaseRequest | null>(null);
     const [isApproveDialogOpen, setIsApproveDialogOpen] = useState(false);
     const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
@@ -34,12 +36,23 @@ export function RequestsTable({ initialRequests }: RequestsTableProps) {
         setIsClient(true);
     }, []);
 
-    // This useEffect will sync the component's state with the server-provided props.
-    // This is crucial for when the page is revalidated and new data is fetched.
     useEffect(() => {
         setRequests(initialRequests);
     }, [initialRequests]);
 
+    const handleGmailSync = async () => {
+        setIsSyncing(true);
+        toast({ title: '正在同步...', description: '正在從 Gmail 讀取最新的 FPS 付款紀錄。' });
+        const result = await triggerGmailCheck();
+        if (result.success) {
+            toast({ title: '同步完成', description: result.message || `成功處理 ${result.processedCount || 0} 封郵件。` });
+            // You might want to refresh the list of requests here by calling a server action
+            // For now, we assume revalidatePath works.
+        } else {
+            toast({ variant: 'destructive', title: '同步失敗', description: result.error });
+        }
+        setIsSyncing(false);
+    };
 
     const handleOpenApproveDialog = (request: TokenPurchaseRequest) => {
         setSelectedRequest(request);
@@ -144,28 +157,34 @@ export function RequestsTable({ initialRequests }: RequestsTableProps) {
 
     return (
         <>
-            <div className="flex items-center gap-2 flex-wrap p-1 mb-4">
-                <Input
-                    placeholder="搜尋 Ref No, 姓名, 電郵或電話..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="h-9 max-w-sm"
-                />
-                <Select value={statusFilter} onValueChange={setStatusFilter}>
-                    <SelectTrigger className="h-9 w-[180px]">
-                        <SelectValue placeholder="篩選狀態" />
-                    </SelectTrigger>
-                    <SelectContent>
-                        <SelectItem value="all">所有狀態</SelectItem>
-                        <SelectItem value="requesting">要求中</SelectItem>
-                        <SelectItem value="processing">等待批核</SelectItem>
-                        <SelectItem value="completed">已完成</SelectItem>
-                        <SelectItem value="cancelled">已取消</SelectItem>
-                    </SelectContent>
-                </Select>
-                 <Button variant="ghost" onClick={clearFilters} className="h-9">
-                    <FilterX className="mr-2 h-4 w-4"/>
-                    清除
+            <div className="flex items-center justify-between gap-2 flex-wrap p-1 mb-4">
+                <div className="flex items-center gap-2 flex-wrap">
+                    <Input
+                        placeholder="搜尋 Ref No, 姓名, 電郵或電話..."
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className="h-9 max-w-sm"
+                    />
+                    <Select value={statusFilter} onValueChange={setStatusFilter}>
+                        <SelectTrigger className="h-9 w-[180px]">
+                            <SelectValue placeholder="篩選狀態" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="all">所有狀態</SelectItem>
+                            <SelectItem value="requesting">要求中</SelectItem>
+                            <SelectItem value="processing">等待批核</SelectItem>
+                            <SelectItem value="completed">已完成</SelectItem>
+                            <SelectItem value="cancelled">已取消</SelectItem>
+                        </SelectContent>
+                    </Select>
+                     <Button variant="ghost" onClick={clearFilters} className="h-9">
+                        <FilterX className="mr-2 h-4 w-4"/>
+                        清除
+                    </Button>
+                </div>
+                <Button onClick={handleGmailSync} disabled={isSyncing}>
+                    {isSyncing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <MailCheck className="mr-2 h-4 w-4"/>}
+                    從 Gmail 同步 FPS 付款紀錄
                 </Button>
             </div>
             <div className="overflow-x-auto border rounded-lg">
@@ -298,3 +317,5 @@ export function RequestsTable({ initialRequests }: RequestsTableProps) {
         </>
     );
 }
+
+    

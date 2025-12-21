@@ -1,3 +1,4 @@
+
 'use server';
 
 import { revalidatePath } from 'next/cache';
@@ -5,6 +6,9 @@ import { db } from '@/lib/firebase-admin';
 import type { TokenPurchaseRequest, UserNotification, Reservation } from '@/types';
 import { adjustUserTokens, getUserByEmail, type User as AppUser } from '../users/actions';
 import admin from 'firebase-admin';
+import { google } from 'googleapis';
+import * as logger from "firebase-functions/logger";
+
 
 type ServerActionResponse = {
     success: boolean;
@@ -70,33 +74,6 @@ export async function getTokenPurchaseRequestsByUser(userEmail: string): Promise
         return { success: true, requests };
     } catch (e: any) {
         return { success: false, error: `從資料庫讀取您的購買紀錄時發生錯誤: ${e.message}` };
-    }
-}
-
-
-// --- User submits proof of payment ---
-export async function submitPaymentProof(requestId: string, paymentProofUrl: string): Promise<ServerActionResponse> {
-    if (!db) return { success: false, error: '後端資料庫未連接。' };
-    try {
-        const docRef = db.collection(TOKEN_REQUESTS_COLLECTION).doc(requestId);
-        
-        await docRef.update({
-            paymentProofUrl: paymentProofUrl,
-            status: 'processing'
-        });
-        
-        const updatedDoc = await docRef.get();
-        if (!updatedDoc.exists) {
-            throw new Error("找不到該請求，可能已被刪除。");
-        }
-        const updatedRequest = updatedDoc.data() as TokenPurchaseRequest;
-
-        revalidatePath('/admin/token-requests');
-        revalidatePath('/purchase-tokens');
-        
-        return { success: true, updatedRequest };
-    } catch (e: any) {
-        return { success: false, error: e.message };
     }
 }
 
@@ -268,3 +245,109 @@ export async function checkAndClearUserNotifications(userEmail: string): Promise
         return null;
     }
 }
+
+// --- NEW: Manually Triggered Gmail Check ---
+
+function parsePaymentEmail(body: string): { amount: number | null, payer: string | null } {
+    const amountMatch = body.match(/金額為\s*HKD\s*([\d,]+\.?\d*)/);
+    const payerMatch = body.match(/你已收到\s*(.+?)\s*的轉賬/);
+    const amount = amountMatch ? parseFloat(amountMatch[1].replace(/,/g, '')) : null;
+    const payer = payerMatch ? payerMatch[1].trim() : null;
+    return { amount, payer };
+}
+
+export async function triggerGmailCheck(): Promise<ServerActionResponse> {
+    const GMAIL_USER = process.env.EMAIL_SERVER_USER;
+    const SERVICE_ACCOUNT_EMAIL = process.env.SERVICE_ACCOUNT_CLIENT_EMAIL;
+    const PRIVATE_KEY = process.env.SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, '\n');
+
+    if (!db) return { success: false, error: "後端資料庫未連接。" };
+    if (!GMAIL_USER || !SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY) {
+        return { success: false, error: "缺少必要的 Gmail API 環境變數設定。" };
+    }
+
+    try {
+        const auth = new google.auth.JWT({
+            email: SERVICE_ACCOUNT_EMAIL,
+            key: PRIVATE_KEY,
+            scopes: ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.modify'],
+            subject: GMAIL_USER, // Impersonate the user
+        });
+
+        const gmail = google.gmail({ version: 'v1', auth });
+
+        const listRes = await gmail.users.messages.list({
+            userId: 'me',
+            q: 'is:unread',
+        });
+
+        const messages = listRes.data.messages;
+        if (!messages || messages.length === 0) {
+            return { success: true, message: "沒有新的未讀郵件。", processedCount: 0 };
+        }
+
+        let processedCount = 0;
+        let errors: string[] = [];
+
+        for (const message of messages) {
+            if (!message.id) continue;
+
+            try {
+                const msgRes = await gmail.users.messages.get({ userId: 'me', id: message.id, format: 'full' });
+                const bodyData = msgRes.data.payload?.parts?.find(p => p.mimeType === 'text/plain')?.body?.data;
+                if (!bodyData) {
+                    await gmail.users.messages.modify({ userId: 'me', id: message.id, requestBody: { removeLabelIds: ['UNREAD'] } });
+                    continue;
+                }
+                
+                const emailBody = Buffer.from(bodyData, 'base64').toString('utf8');
+                const { amount } = parsePaymentEmail(emailBody);
+
+                if (amount !== null) {
+                    const requestsQuery = db.collection('tokenRequests')
+                        .where('status', 'in', ['requesting', 'processing'])
+                        .where('totalPriceHKD', '==', amount);
+                    
+                    const requestSnapshot = await requestsQuery.get();
+
+                    if (requestSnapshot.size === 1) {
+                        const requestDoc = requestSnapshot.docs[0];
+                        const requestData = requestDoc.data() as TokenPurchaseRequest;
+                        
+                        const userQuery = db.collection('users').where('email', '==', requestData.userEmail).limit(1);
+                        const userSnapshot = await userQuery.get();
+
+                        if (!userSnapshot.empty) {
+                            const userDoc = userSnapshot.docs[0];
+                            await db.runTransaction(async (transaction) => {
+                               const tokenQuantity = requestData.tokenQuantity;
+                               transaction.update(userDoc.ref, { tokens: admin.firestore.FieldValue.increment(tokenQuantity) });
+                               transaction.update(requestDoc.ref, { status: 'completed', completionDate: new Date().toISOString() });
+                            });
+                            processedCount++;
+                        }
+                    }
+                }
+            } catch (procError: any) {
+                errors.push(`處理郵件 ${message.id} 時出錯: ${procError.message}`);
+            } finally {
+                await gmail.users.messages.modify({ userId: 'me', id: message.id, requestBody: { removeLabelIds: ['UNREAD'] } });
+            }
+        }
+        
+        revalidatePath('/admin/token-requests');
+        revalidatePath('/admin/users');
+
+        if (errors.length > 0) {
+            return { success: false, error: errors.join('; '), processedCount };
+        }
+
+        return { success: true, message: `成功處理 ${processedCount} 封郵件。`, processedCount };
+
+    } catch (error: any) {
+        console.error('FATAL: An unexpected error occurred during the Gmail check:', error);
+        return { success: false, error: `觸發 Gmail 檢查時發生嚴重錯誤: ${error.message}` };
+    }
+}
+
+    
