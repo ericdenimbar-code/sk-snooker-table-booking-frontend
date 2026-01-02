@@ -1,18 +1,35 @@
 
 import { NextResponse } from 'next/server';
-import { getFirebaseAdmin } from '@/lib/firebase-admin'; // CORRECT IMPORT
+import { getFirebaseAdmin } from '@/lib/firebase-admin'; // CORRECTED IMPORT
 import * as admin from 'firebase-admin';
 
+// Define the expected payload structure from the Apps Script
 interface FpsPaymentPayload {
   amount: number;
   payer: string;
   secret: string;
 }
 
+// Define the structure of a token request document from Firestore
+type TokenPurchaseRequest = {
+  id: string;
+  userEmail: string;
+  tokenQuantity: number;
+  totalPriceHKD: number;
+  status: 'requesting' | 'processing' | 'completed' | 'cancelled';
+};
+
+// Define the structure of a user document from Firestore
+type User = {
+  id: string;
+  email: string;
+  tokens: number;
+};
+
+
 const APPS_SCRIPT_SECRET_KEY = process.env.APPS_SCRIPT_SECRET_KEY;
 
 export async function POST(request: Request) {
-  // Wrap the entire function in a robust try-catch block to guarantee a response.
   try {
     console.log('[API] processFpsPaymentHttp function started.');
 
@@ -29,7 +46,7 @@ export async function POST(request: Request) {
     console.log('[API] Secret key authorized.');
     
     // 2. Safely initialize Firebase Admin SDK
-    const { db, error: dbError } = getFirebaseAdmin(); // CORRECT FUNCTION CALL
+    const { db, error: dbError } = getFirebaseAdmin(); // CORRECTED FUNCTION CALL
     if (!db || dbError) {
       console.error('[API] DB connection failed:', dbError?.message);
       return NextResponse.json(
@@ -46,7 +63,7 @@ export async function POST(request: Request) {
     }
     console.log(`[API] Processing payment - Amount: HKD ${amount}, Payer: ${payer || 'N/A'}.`);
 
-    // 4. Query for matching token requests (Simplified Query)
+    // 4. Query for matching token requests
     const requestsQuery = db.collection('tokenRequests').where('status', '==', 'requesting');
     const requestSnapshot = await requestsQuery.get();
 
@@ -71,7 +88,7 @@ export async function POST(request: Request) {
 
     // 6. Process the unique match in a transaction
     const requestDoc = matchingDocs[0];
-    const requestData = requestDoc.data();
+    const requestData = requestDoc.data() as TokenPurchaseRequest;
     console.log(`[API] Found unique match! Request ID: ${requestDoc.id} for user ${requestData.userEmail}.`);
 
     const userQuery = db.collection('users').where('email', '==', requestData.userEmail).limit(1);
@@ -91,7 +108,7 @@ export async function POST(request: Request) {
        transaction.update(requestDoc.ref, { 
            status: 'completed', 
            completionDate: new Date().toISOString(),
-           notes: `Automatically approved based on payment from: ${payer || 'Unknown'}`
+           notes: `Automatically approved by Apps Script based on payment from: ${payer || 'Unknown'}`
         });
     });
     
