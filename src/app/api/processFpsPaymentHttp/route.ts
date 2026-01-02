@@ -1,10 +1,9 @@
 
 import { NextResponse } from 'next/server';
-import { getFirebaseAdmin } from '@/lib/firebase-admin'; // CORRECTED IMPORT
+import { getFirebaseAdmin } from '@/lib/firebase-admin';
 import * as admin from 'firebase-admin';
 
 // Define the exact types needed for backend operations to ensure type safety.
-// These types are specific to this backend function's needs.
 type BackendTokenPurchaseRequest = {
   id: string;
   userEmail: string;
@@ -28,11 +27,12 @@ interface FpsPaymentPayload {
 const APPS_SCRIPT_SECRET_KEY = process.env.APPS_SCRIPT_SECRET_KEY;
 
 export async function POST(request: Request) {
-  // Wrap the entire function in a try-catch block for robust error handling.
+  // Wrap the entire function in a robust try-catch block.
   try {
     console.log('[API] processFpsPaymentHttp function started.');
 
-    const { db, error: dbError } = getFirebaseAdmin(); // CORRECTED USAGE
+    // CORRECT WAY TO INITIALIZE: Call the function to get the instance.
+    const { db, error: dbError } = getFirebaseAdmin();
     if (!db || dbError) {
       console.error('[API] DB connection failed:', dbError?.message);
       return NextResponse.json(
@@ -60,6 +60,7 @@ export async function POST(request: Request) {
     
     console.log(`[API] Processing payment - Amount: HKD ${amount}, Payer: ${payer || 'N/A'}.`);
     
+    // Simplified query to avoid needing a composite index.
     const requestsQuery = db.collection('tokenRequests').where('status', '==', 'requesting');
     const requestSnapshot = await requestsQuery.get();
 
@@ -67,8 +68,10 @@ export async function POST(request: Request) {
       console.log(`[API] No documents found with 'requesting' status. No action taken.`);
       return NextResponse.json({ status: 'no_match', message: 'No pending requests found.' });
     }
-    console.log(`[API] Found ${requestSnapshot.docs.length} documents with 'requesting' status. Filtering by amount...`);
+    
+    console.log(`[API] Found ${requestSnapshot.docs.length} documents with 'requesting' status. Filtering by amount in backend...`);
 
+    // Manual filtering in the backend.
     const matchingDocs = requestSnapshot.docs.filter(doc => (doc.data() as BackendTokenPurchaseRequest).totalPriceHKD === amount);
 
     if (matchingDocs.length === 0) {
@@ -110,6 +113,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ status: 'success', message: `Request ${requestDoc.id} processed.` });
 
   } catch (error: any) {
+    // This will catch any unexpected errors in the entire process.
     console.error('[API] FATAL: An unexpected error occurred in POST /api/processFpsPaymentHttp:', error.stack || error.message);
     return NextResponse.json(
       { status: 'error', message: `An internal server error occurred: ${error.message}` },
