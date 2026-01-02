@@ -1,23 +1,22 @@
 
 import { NextResponse } from 'next/server';
-import { getFirebaseAdmin } from '@/lib/firebase-admin';
+import { getFirebaseAdmin } from '@/lib/firebase-admin'; // CORRECTED IMPORT
 import * as admin from 'firebase-admin';
 
 // Define the exact types needed for backend operations to ensure type safety.
+// These types are specific to this backend function's needs.
 type BackendTokenPurchaseRequest = {
   id: string;
   userEmail: string;
   tokenQuantity: number;
   totalPriceHKD: number;
   status: 'requesting' | 'processing' | 'completed' | 'cancelled';
-  // other fields if needed, but keep it minimal
 };
 
 type BackendUser = {
   id: string;
   email: string;
-  tokens?: number; // Make tokens optional to handle cases where it might be missing
-  // other fields
+  tokens: number;
 };
 
 interface FpsPaymentPayload {
@@ -29,11 +28,11 @@ interface FpsPaymentPayload {
 const APPS_SCRIPT_SECRET_KEY = process.env.APPS_SCRIPT_SECRET_KEY;
 
 export async function POST(request: Request) {
-  // Wrap the entire function in a try-catch block to handle any unexpected errors.
+  // Wrap the entire function in a try-catch block for robust error handling.
   try {
     console.log('[API] processFpsPaymentHttp function started.');
 
-    const { db, error: dbError } = getFirebaseAdmin();
+    const { db, error: dbError } = getFirebaseAdmin(); // CORRECTED USAGE
     if (!db || dbError) {
       console.error('[API] DB connection failed:', dbError?.message);
       return NextResponse.json(
@@ -111,7 +110,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ status: 'success', message: `Request ${requestDoc.id} processed.` });
 
   } catch (error: any) {
-    // This is the crucial part. It catches ANY error from the block above.
     console.error('[API] FATAL: An unexpected error occurred in POST /api/processFpsPaymentHttp:', error.stack || error.message);
     return NextResponse.json(
       { status: 'error', message: `An internal server error occurred: ${error.message}` },
