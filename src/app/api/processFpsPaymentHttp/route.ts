@@ -3,20 +3,21 @@ import { NextResponse } from 'next/server';
 import { getFirebaseAdmin } from '@/lib/firebase-admin';
 import * as admin from 'firebase-admin';
 
-// --- Backend-specific Type Definitions ---
-// To avoid conflicts with client-side types, define the exact shapes needed for this backend operation.
+// Define the exact types needed for backend operations to ensure type safety.
 type BackendTokenPurchaseRequest = {
   id: string;
   userEmail: string;
   tokenQuantity: number;
   totalPriceHKD: number;
-  status: string;
+  status: 'requesting' | 'processing' | 'completed' | 'cancelled';
+  // other fields if needed, but keep it minimal
 };
 
 type BackendUser = {
-    id: string;
-    email: string;
-    tokens: number;
+  id: string;
+  email: string;
+  tokens?: number; // Make tokens optional to handle cases where it might be missing
+  // other fields
 };
 
 interface FpsPaymentPayload {
@@ -28,19 +29,20 @@ interface FpsPaymentPayload {
 const APPS_SCRIPT_SECRET_KEY = process.env.APPS_SCRIPT_SECRET_KEY;
 
 export async function POST(request: Request) {
-  console.log('[API] processFpsPaymentHttp function started.');
-
-  const { db, error: dbError } = getFirebaseAdmin();
-  if (!db || dbError) {
-    console.error('[API] DB connection failed:', dbError?.message);
-    return NextResponse.json(
-      { status: 'error', message: 'Internal Server Error: Database not connected.' },
-      { status: 500 }
-    );
-  }
-  console.log('[API] Database connection successful.');
-
+  // Wrap the entire function in a try-catch block to handle any unexpected errors.
   try {
+    console.log('[API] processFpsPaymentHttp function started.');
+
+    const { db, error: dbError } = getFirebaseAdmin();
+    if (!db || dbError) {
+      console.error('[API] DB connection failed:', dbError?.message);
+      return NextResponse.json(
+        { status: 'error', message: `Database connection failed: ${dbError?.message}` },
+        { status: 500 }
+      );
+    }
+    console.log('[API] Database connection successful.');
+
     const body: FpsPaymentPayload = await request.json();
     const { amount, payer, secret } = body;
     
@@ -93,8 +95,7 @@ export async function POST(request: Request) {
     }
         
     const userDoc = userSnapshot.docs[0];
-    const userData = userDoc.data() as BackendUser;
-    console.log(`[API] Found user "${userData.email}" (ID: ${userDoc.id}). Starting transaction...`);
+    console.log(`[API] Found user "${userDoc.data().email}" (ID: ${userDoc.id}). Starting transaction...`);
 
     await db.runTransaction(async (transaction) => {
        const tokenQuantity = requestData.tokenQuantity;
@@ -110,6 +111,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ status: 'success', message: `Request ${requestDoc.id} processed.` });
 
   } catch (error: any) {
+    // This is the crucial part. It catches ANY error from the block above.
     console.error('[API] FATAL: An unexpected error occurred in POST /api/processFpsPaymentHttp:', error.stack || error.message);
     return NextResponse.json(
       { status: 'error', message: `An internal server error occurred: ${error.message}` },
