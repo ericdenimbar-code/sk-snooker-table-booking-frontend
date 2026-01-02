@@ -1,22 +1,7 @@
 
 import { NextResponse } from 'next/server';
-import { getFirebaseAdmin } from '@/lib/firebase-admin';
+import { getFirebaseAdmin } from '@/lib/firebase-admin'; // CORRECT IMPORT
 import * as admin from 'firebase-admin';
-
-// Define the exact types needed for backend operations to ensure type safety.
-type BackendTokenPurchaseRequest = {
-  id: string;
-  userEmail: string;
-  tokenQuantity: number;
-  totalPriceHKD: number;
-  status: 'requesting' | 'processing' | 'completed' | 'cancelled';
-};
-
-type BackendUser = {
-  id: string;
-  email: string;
-  tokens: number;
-};
 
 interface FpsPaymentPayload {
   amount: number;
@@ -27,21 +12,11 @@ interface FpsPaymentPayload {
 const APPS_SCRIPT_SECRET_KEY = process.env.APPS_SCRIPT_SECRET_KEY;
 
 export async function POST(request: Request) {
-  // Wrap the entire function in a robust try-catch block.
+  // Wrap the entire function in a robust try-catch block to guarantee a response.
   try {
     console.log('[API] processFpsPaymentHttp function started.');
 
-    // CORRECT WAY TO INITIALIZE: Call the function to get the instance.
-    const { db, error: dbError } = getFirebaseAdmin();
-    if (!db || dbError) {
-      console.error('[API] DB connection failed:', dbError?.message);
-      return NextResponse.json(
-        { status: 'error', message: `Database connection failed: ${dbError?.message}` },
-        { status: 500 }
-      );
-    }
-    console.log('[API] Database connection successful.');
-
+    // 1. Authenticate the request from Apps Script
     const body: FpsPaymentPayload = await request.json();
     const { amount, payer, secret } = body;
     
@@ -52,40 +27,51 @@ export async function POST(request: Request) {
       return NextResponse.json({ status: 'error', message: 'Unauthorized' }, { status: 401 });
     }
     console.log('[API] Secret key authorized.');
+    
+    // 2. Safely initialize Firebase Admin SDK
+    const { db, error: dbError } = getFirebaseAdmin(); // CORRECT FUNCTION CALL
+    if (!db || dbError) {
+      console.error('[API] DB connection failed:', dbError?.message);
+      return NextResponse.json(
+        { status: 'error', message: `Database connection failed: ${dbError?.message}` },
+        { status: 500 }
+      );
+    }
+    console.log('[API] Database connection successful.');
 
+    // 3. Validate the payload
     if (typeof amount !== 'number' || amount <= 0) {
       console.error(`[API] Invalid amount received: ${amount}.`);
       return NextResponse.json({ status: 'error', message: 'Invalid amount' }, { status: 400 });
     }
-    
     console.log(`[API] Processing payment - Amount: HKD ${amount}, Payer: ${payer || 'N/A'}.`);
-    
-    // Simplified query to avoid needing a composite index.
+
+    // 4. Query for matching token requests (Simplified Query)
     const requestsQuery = db.collection('tokenRequests').where('status', '==', 'requesting');
     const requestSnapshot = await requestsQuery.get();
 
     if (requestSnapshot.empty) {
       console.log(`[API] No documents found with 'requesting' status. No action taken.`);
-      return NextResponse.json({ status: 'no_match', message: 'No pending requests found.' });
+      return NextResponse.json({ status: 'no_match', message: 'No pending requests found.' }, { status: 200 });
     }
-    
     console.log(`[API] Found ${requestSnapshot.docs.length} documents with 'requesting' status. Filtering by amount in backend...`);
 
-    // Manual filtering in the backend.
-    const matchingDocs = requestSnapshot.docs.filter(doc => (doc.data() as BackendTokenPurchaseRequest).totalPriceHKD === amount);
+    // 5. Filter for the exact amount in the backend
+    const matchingDocs = requestSnapshot.docs.filter(doc => doc.data().totalPriceHKD === amount);
 
     if (matchingDocs.length === 0) {
       console.log(`[API] No pending requests found for amount HKD ${amount}.`);
-      return NextResponse.json({ status: 'no_match', message: 'No pending request for this amount.' });
+      return NextResponse.json({ status: 'no_match', message: 'No pending request for this amount.' }, { status: 200 });
     }
     
     if (matchingDocs.length > 1) {
       console.warn(`[API] Found ${matchingDocs.length} ambiguous pending requests for HKD ${amount}. Manual approval is required.`);
-      return NextResponse.json({ status: 'ambiguous_match', message: 'Multiple requests match this amount.' });
+      return NextResponse.json({ status: 'ambiguous_match', message: 'Multiple requests match this amount.' }, { status: 200 });
     }
 
+    // 6. Process the unique match in a transaction
     const requestDoc = matchingDocs[0];
-    const requestData = requestDoc.data() as BackendTokenPurchaseRequest;
+    const requestData = requestDoc.data();
     console.log(`[API] Found unique match! Request ID: ${requestDoc.id} for user ${requestData.userEmail}.`);
 
     const userQuery = db.collection('users').where('email', '==', requestData.userEmail).limit(1);
@@ -113,7 +99,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ status: 'success', message: `Request ${requestDoc.id} processed.` });
 
   } catch (error: any) {
-    // This will catch any unexpected errors in the entire process.
+    // This is the crucial part for debugging.
     console.error('[API] FATAL: An unexpected error occurred in POST /api/processFpsPaymentHttp:', error.stack || error.message);
     return NextResponse.json(
       { status: 'error', message: `An internal server error occurred: ${error.message}` },
