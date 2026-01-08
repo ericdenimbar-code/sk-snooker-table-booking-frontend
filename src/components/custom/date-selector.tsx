@@ -1,4 +1,3 @@
-
 'use client';
 
 import React, { useState, useMemo } from 'react';
@@ -27,12 +26,13 @@ import { cn } from '@/lib/utils';
 type DateSelectorProps = {
   selected: Date | undefined;
   onSelect: (date: Date | undefined) => void;
+  maxDate?: Date;
 };
 
-export function DateSelector({ selected, onSelect }: DateSelectorProps) {
+export function DateSelector({ selected, onSelect, maxDate }: DateSelectorProps) {
   const today = startOfToday();
   const [displayDate, setDisplayDate] = useState(selected || today);
-  const maxDate = addDays(today, 29);
+  const effectiveMaxDate = maxDate || addDays(today, 29); // Default to 30 days if no maxDate is provided
 
   // State for touch controls
   const [touchStart, setTouchStart] = useState<number | null>(null);
@@ -45,7 +45,7 @@ export function DateSelector({ selected, onSelect }: DateSelectorProps) {
     return eachDayOfInterval({ start, end });
   }, [displayDate]);
   
-  const isDateDisabled = (date: Date) => date < today || date > maxDate;
+  const isDateDisabled = (date: Date) => date < today || date > effectiveMaxDate;
 
   const handleSelect = (date: Date) => {
     if (isDateDisabled(date)) return;
@@ -59,9 +59,9 @@ export function DateSelector({ selected, onSelect }: DateSelectorProps) {
   const prevMonth = () => setDisplayDate(subMonths(displayDate, 1));
   
   const canGoToPrevWeek = endOfWeek(subWeeks(startOfWeek(displayDate, { locale: zhHK }), 1), { locale: zhHK }) >= today;
-  const canGoToNextWeek = startOfWeek(addWeeks(startOfWeek(displayDate, { locale: zhHK }), 1), { locale: zhHK }) <= maxDate;
+  const canGoToNextWeek = startOfWeek(addWeeks(startOfWeek(displayDate, { locale: zhHK }), 1), { locale: zhHK }) <= effectiveMaxDate;
   const canGoToPrevMonth = endOfMonth(subMonths(displayDate, 1)) >= today;
-  const canGoToNextMonth = startOfMonth(addMonths(displayDate, 1)) <= maxDate;
+  const canGoToNextMonth = startOfMonth(addMonths(displayDate, 1)) <= effectiveMaxDate;
 
   const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
 
