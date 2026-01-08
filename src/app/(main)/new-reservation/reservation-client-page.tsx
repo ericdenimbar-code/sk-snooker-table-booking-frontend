@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { addDays, format, startOfToday, setHours, setMinutes, isBefore, isSameDay, subDays, eachDayOfInterval, differenceInDays } from 'date-fns';
+import { addDays, format, startOfToday, setHours, setMinutes, isBefore, isSameDay, subDays, eachDayOfInterval, differenceInDays, addWeeks } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -74,6 +74,23 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [isSoloBooking, setIsSoloBooking] = useState(false);
+
+  const maxBookableDate = useMemo(() => {
+    const today = startOfToday();
+    if (!user) return addDays(today, 6); // Default for non-logged-in/loading user
+
+    switch (user.role.toLowerCase()) {
+      case 'admin':
+        return addDays(today, 364); // 365 days
+      case 'vvip':
+        return addWeeks(today, 4); 
+      case 'vip':
+        return addWeeks(today, 2);
+      case 'user':
+      default:
+        return addDays(today, 6); // 7 days
+    }
+  }, [user]);
 
   useEffect(() => {
     setIsMounted(true);
@@ -624,6 +641,7 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
                     }
                   }
                 }}
+                maxDate={maxBookableDate}
               />
           </div>
 
