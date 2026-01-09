@@ -143,17 +143,23 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
   const [requests, setRequests] = useState<TokenPurchaseRequest[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
 
-  const fetchHistory = useCallback(async (email: string) => {
+  const fetchHistory = async (email: string) => {
     setIsLoadingHistory(true);
-    const result = await getTokenPurchaseRequestsByUser(email);
-    if (result.success && result.requests) {
-      setRequests(result.requests);
-    } else {
-      console.error("Failed to fetch purchase history:", result.error);
-      setRequests([]); 
+    try {
+        const result = await getTokenPurchaseRequestsByUser(email);
+        if (result.success && result.requests) {
+            setRequests(result.requests);
+        } else {
+            console.error("Failed to fetch purchase history:", result.error);
+            setRequests([]); 
+        }
+    } catch(e) {
+        console.error("Exception while fetching purchase history:", e);
+        setRequests([]);
+    } finally {
+        setIsLoadingHistory(false);
     }
-    setIsLoadingHistory(false);
-  }, []);
+  };
 
   useEffect(() => {
     const userDataString = localStorage.getItem('user');
@@ -173,7 +179,7 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
     } else {
       setIsLoadingHistory(false);
     }
-  }, [fetchHistory]);
+  }, []);
 
   const totalPrice = useMemo(() => {
     const quantity = Number(purchaseQuantity) || 0;
@@ -369,7 +375,7 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
               )}
                <div className="text-center space-y-1 border-t pt-3">
                  <p className="text-sm text-muted-foreground">或手動輸入：</p>
-                 <p><span className="font-semibold">FPS 號碼：</span><span className="text-2xl font-bold text-primary py-1">{paymentInfo.fpsNumber || 'N/A'}</span></p>
+                 <p><span className="font-semibold">FPS 號碼：</span><span className="text-lg font-bold">{paymentInfo.fpsNumber || 'N/A'}</span></p>
                  <p><span className="font-semibold">收款戶口名稱：</span><span className="text-lg font-bold">{paymentInfo.accountHolderName || 'N/A'}</span></p>
                  <p className="text-xs text-muted-foreground pt-2">請在轉帳時於備註欄輸入您的請求參考編號: <span className="font-mono bg-muted px-1.5 py-0.5 rounded">{pendingRequestInfo?.id}</span></p>
                </div>
@@ -382,3 +388,4 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
     </main>
   );
 }
+    
