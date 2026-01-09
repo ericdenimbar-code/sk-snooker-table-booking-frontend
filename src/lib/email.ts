@@ -1,8 +1,11 @@
+
 'use server'
 
 import nodemailer from 'nodemailer';
 import type { Reservation } from '@/types';
 import type { ContactInfo } from '@/app/admin/settings/actions';
+import type { User as AppUser } from '@/app/admin/users/actions';
+import { format } from 'date-fns';
 
 
 const EMAIL_SERVER_USER = process.env.EMAIL_SERVER_USER;
@@ -100,3 +103,56 @@ export async function sendQrCodeEmail(
         return false;
     }
 }
+
+// New function to send top-up confirmation email
+export async function sendTopUpConfirmationEmail(
+    user: AppUser,
+    topUpAmount: number,
+    newBalance: number,
+    contactInfo: ContactInfo
+): Promise<boolean> {
+    
+    if (!transporter) {
+        console.error("Cannot send email: Email service is not configured or failed to initialize.");
+        return false;
+    }
+
+    const mailOptions = {
+        from: `"${EMAIL_FROM_NAME}" <${EMAIL_SERVER_USER}>`,
+        to: user.email,
+        subject: `您在 ${EMAIL_FROM_NAME} 的帳戶增值成功`,
+        html: `
+            <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+                <h2>帳戶增值成功！</h2>
+                <p>致 ${user.name}，</p>
+                <p>您的帳戶已成功增值。</p>
+                <hr>
+                <h3>增值詳情：</h3>
+                <ul>
+                    <li><strong>增值時間:</strong> ${format(new Date(), 'yyyy-MM-dd HH:mm:ss')}</li>
+                    <li><strong>增值金額:</strong> HKD ${topUpAmount.toFixed(2)}</li>
+                    <li><strong>最新餘額:</strong> <strong>HKD ${newBalance.toFixed(2)}</strong></li>
+                </ul>
+                <hr>
+                <p>感謝您的支持！</p>
+                <p>
+                    <strong>${EMAIL_FROM_NAME}</strong><br>
+                    電話: ${contactInfo.whatsapp}<br>
+                    電郵: ${contactInfo.email}<br>
+                    地址: ${contactInfo.address}
+                </p>
+            </div>
+        `,
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        console.log(`✅ Top-up confirmation email sent to ${user.email}`);
+        return true;
+    } catch (error) {
+        console.error(`❌ Failed to send top-up email to ${user.email}:`, error);
+        return false;
+    }
+}
+
+    

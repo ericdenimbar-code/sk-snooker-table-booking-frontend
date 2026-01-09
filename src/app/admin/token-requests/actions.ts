@@ -1,3 +1,4 @@
+
 'use server';
 
 import { revalidatePath } from 'next/cache';
@@ -5,6 +6,9 @@ import { db } from '@/lib/firebase-admin';
 import type { TokenPurchaseRequest, UserNotification, Reservation } from '@/types';
 import { adjustUserTokens, getUserByEmail, type User as AppUser } from '../users/actions';
 import admin from 'firebase-admin';
+import { sendTopUpConfirmationEmail } from '@/lib/email';
+import { getRoomSettings } from '../settings/actions';
+
 
 type ServerActionResponse = {
     success: boolean;
@@ -115,58 +119,72 @@ export async function approveTokenPurchaseRequest(
         return { success: false, error: `在資料庫中找不到電郵為 ${userEmail} 的使用者。` };
     }
     const userId = user.id;
-    
-    // First, approve the linked reservation if it exists
-    if (linkedReservationId) {
-        try {
-            const reservationRef = db.collection(RESERVATIONS_COLLECTION).doc(linkedReservationId);
-            await reservationRef.update({ status: 'Confirmed' });
-            revalidatePath('/admin/bookings');
-            revalidatePath('/reservations');
-        } catch (e: any) {
-            return { success: false, error: `更新預訂狀態時失敗: ${e.message}` };
-        }
-    }
 
-    // Then, top up the user's account
-    const tokenResult = await adjustUserTokens(userId, tokenQuantity);
-    if (!tokenResult.success) {
-        // Important: If token top-up fails, we should ideally roll back the reservation status change.
-        // For simplicity now, we just report the error.
-        return { success: false, error: `預訂狀態已更新，但增加餘額失敗: ${tokenResult.error}` };
-    }
-
-    // Finally, update the token request status
     try {
-        await db.collection(TOKEN_REQUESTS_COLLECTION).doc(requestId).update({
-            status: 'completed',
-            completionDate: new Date().toISOString()
+        let finalUserTokens = 0;
+        
+        await db.runTransaction(async (transaction) => {
+            const userRef = db.collection('users').doc(userId);
+            const requestRef = db.collection(TOKEN_REQUESTS_COLLECTION).doc(requestId);
+            const userDoc = await transaction.get(userRef);
+
+            if (!userDoc.exists) {
+                throw new Error(`找不到ID為 ${userId} 的使用者。`);
+            }
+
+            const currentTokens = userDoc.data()?.tokens ?? 0;
+            finalUserTokens = currentTokens + tokenQuantity;
+
+            // 1. Update user tokens
+            transaction.update(userRef, { tokens: admin.firestore.FieldValue.increment(tokenQuantity) });
+            
+            // 2. Update token request status
+            transaction.update(requestRef, {
+                status: 'completed',
+                completionDate: new Date().toISOString()
+            });
+
+            // 3. Update linked reservation if it exists
+            if (linkedReservationId) {
+                const reservationRef = db.collection(RESERVATIONS_COLLECTION).doc(linkedReservationId);
+                transaction.update(reservationRef, { status: 'Confirmed' });
+            }
         });
-    } catch (e: any) {
-        return { success: false, error: `餘額已增加，但更新請求狀態時失敗: ${e.message}` };
-    }
 
-    // Create a notification for the user
-    try {
+        // --- Post-transaction side effects ---
+
+        // A. Create a notification for the user (to trigger UI refresh)
         const notification: UserNotification = {
             id: `N-${Date.now()}`,
-            title: linkedReservationId ? '預訂及增值成功！' : '增值成功！',
-            description: linkedReservationId 
-                ? `您的預訂 (Ref: ${linkedReservationId}) 已確認，並成功增值 HKD ${tokenQuantity}。`
-                : `您購買的 HKD ${tokenQuantity} 已成功存入您的帳戶。感謝您的惠顧！`,
+            title: '增值成功！',
+            description: `您購買的 HKD ${tokenQuantity} 已成功存入您的帳戶。感謝您的惠顧！`,
             timestamp: new Date().toISOString(),
             isRead: false
         };
         await db.collection(USERS_COLLECTION).doc(userId).collection('notifications').doc(notification.id).set(notification);
+        
+        // B. Send confirmation email
+        const settings = await getRoomSettings('1'); // Get settings for email content
+        if (settings) {
+            await sendTopUpConfirmationEmail(user, tokenQuantity, finalUserTokens, settings.contactInfo);
+        } else {
+            console.error(`[CRITICAL] Failed to send top-up email to ${userEmail}: Cannot load settings.`);
+        }
+        
+        revalidatePath('/admin/token-requests');
+        revalidatePath('/admin/users');
+        revalidatePath('/purchase-tokens');
+        if(linkedReservationId) {
+            revalidatePath('/admin/bookings');
+            revalidatePath('/reservations');
+        }
 
-    } catch(e: any) {
-        console.error(`Failed to create notification for ${userEmail}: ${e.message}`);
+        return { success: true };
+    
+    } catch (e: any) {
+        console.error(`Error during 'approveTokenPurchaseRequest' for request ${requestId}:`, e);
+        return { success: false, error: e.message };
     }
-
-    revalidatePath('/admin/token-requests');
-    revalidatePath('/admin/users');
-    revalidatePath('/purchase-tokens');
-    return { success: true };
 }
 
 // --- Admin or user cancels a request ---
@@ -268,3 +286,5 @@ export async function checkAndClearUserNotifications(userEmail: string): Promise
         return null;
     }
 }
+
+    
