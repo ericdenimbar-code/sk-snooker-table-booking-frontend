@@ -1,3 +1,4 @@
+
 'use client';
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
@@ -212,13 +213,13 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
 
     setIsSubmitting(true);
     
-    const requestData: Omit<TokenPurchaseRequest, 'id' | 'status' | 'requestDate' | 'paymentProofUrl' | 'completionDate' | 'expiresAt'> & { paymentMethod: TokenPurchaseRequest['paymentMethod'] } = {
+    const requestData = {
         userEmail: user.email,
         userName: user.name,
         userPhone: user.phone,
         tokenQuantity: quantity,
         totalPriceHKD: totalPrice,
-        paymentMethod: 'fps',
+        paymentMethod: 'fps' as const,
     };
 
     const result = await createTokenPurchaseRequest(requestData);
@@ -388,4 +389,3 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
     </main>
   );
 }
-    
