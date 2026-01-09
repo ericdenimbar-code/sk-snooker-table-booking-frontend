@@ -67,15 +67,10 @@ export default function LoginPage() {
 
   const handleResendVerification = async (email: string) => {
     try {
-        // We need a 'user' object to send the verification email.
-        // We can create a temporary, partial user object for this purpose by signing in,
-        // even if it fails due to an unverified email. The auth state might still hold the user.
         if (auth.currentUser && auth.currentUser.email === email && !auth.currentUser.emailVerified) {
             await sendEmailVerification(auth.currentUser);
         }
     } catch (error: any) {
-        // This is a fallback. It's tricky to get the user object without a successful login.
-        // The logic in onSubmit handles the most common case.
         console.error("Could not get user object to resend verification email on subsequent attempts.", error);
     }
   }
@@ -99,6 +94,7 @@ export default function LoginPage() {
 
       if (userProfile) {
           localStorage.setItem('user', JSON.stringify(userProfile));
+          window.dispatchEvent(new Event('userUpdated')); // Dispatch event on login
           
           if (userProfile.role.toLowerCase() === 'admin') {
               window.location.assign('/admin');
@@ -113,24 +109,8 @@ export default function LoginPage() {
         let title = '登入失敗';
         let description = '您輸入的電子郵件或密碼不正確。';
         
-        // This complex logic attempts to catch unverified users even when signIn fails.
-        if (error.code === 'auth/invalid-credential') {
-            try {
-                // Try to create a user with the same email. If it fails with 'email-already-in-use',
-                // it confirms the user exists. We can then assume they might be unverified.
-                const { createUserWithEmailAndPassword } = await import('firebase/auth');
-                await createUserWithEmailAndPassword(auth, values.email, 'a-deliberately-wrong-password-for-checking');
-            } catch (checkError: any) {
-                if (checkError.code === 'auth/email-already-in-use') {
-                    // This is our best guess that the user exists but is unverified.
-                    // We don't have the user object here, so we can't directly send a new link.
-                    // But we can show the dialog to inform the user.
-                    setEmailForVerification(values.email);
-                    setIsVerificationAlertOpen(true); // We just show the alert.
-                    setIsLoading(false);
-                    return;
-                }
-            }
+        if (error.code === 'auth/invalid-credential' || error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+            description = '您輸入的電子郵件或密碼不正確。'
         } else if (error.message) {
             description = error.message;
         }
@@ -248,3 +228,5 @@ export default function LoginPage() {
     </>
   );
 }
+
+    
