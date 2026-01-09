@@ -7,7 +7,6 @@ import type { TokenPurchaseRequest, UserNotification, Reservation } from '@/type
 import { adjustUserTokens, getUserByEmail, type User as AppUser } from '../users/actions';
 import admin from 'firebase-admin';
 import { google } from 'googleapis';
-import * as logger from "firebase-functions/logger";
 import { sendTopUpConfirmationEmail } from '@/lib/email';
 import { getRoomSettings } from '../settings/actions';
 
@@ -271,8 +270,8 @@ export async function checkAndClearUserNotifications(userEmail: string): Promise
 // --- NEW: Manually Triggered Gmail Check ---
 
 function parsePaymentEmail(body: string): { amount: number | null, payer: string | null } {
-    const amountMatch = body.match(/金額為\\s*HKD\\s*([\\d,]+\\.?\\d*)/);
-    const payerMatch = body.match(/你已收到\\s*(.+?)\\s*的轉賬/);
+    const amountMatch = body.match(/金額為\s*HKD\s*([\d,]+\.?\d*)/);
+    const payerMatch = body.match(/你已收到\s*(.+?)\s*的轉賬/);
     const amount = amountMatch ? parseFloat(amountMatch[1].replace(/,/g, '')) : null;
     const payer = payerMatch ? payerMatch[1].trim() : null;
     return { amount, payer };
@@ -342,7 +341,7 @@ export async function triggerGmailCheck(): Promise<ServerActionResponse> {
                         processedCount++;
                         
                     } else {
-                        logger.warn(`Found ${requestSnapshot.size} ambiguous requests for amount ${amount}. Payer was ${payer}. Manual approval needed.`);
+                        console.warn(`Found ${requestSnapshot.size} ambiguous requests for amount ${amount}. Payer was ${payer}. Manual approval needed.`);
                     }
                 }
             } catch (procError: any) {
