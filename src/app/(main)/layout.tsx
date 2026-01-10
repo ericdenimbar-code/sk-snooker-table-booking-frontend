@@ -10,14 +10,16 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { getRoomSettings } from '@/app/admin/settings/actions';
 import { auth } from '@/lib/firebase';
 import { signOut } from 'firebase/auth';
 import type { User as AppUser } from '@/app/admin/users/actions';
 import { useCart } from '@/hooks/use-cart'; 
 import { Badge } from '@/components/ui/badge';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
+import { useToast } from '@/hooks/use-toast';
+import { checkAndClearUserNotifications } from '@/app/admin/token-requests/actions';
 
 function AccessControlWrapper({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -271,6 +273,51 @@ function MainHeader() {
 import { CartProvider } from '@/hooks/use-cart';
 
 export default function MainLayout({ children }: { children: React.ReactNode }) {
+    const { toast } = useToast();
+    const pathname = usePathname();
+
+    const checkForNotifications = useCallback(async () => {
+        const userDataString = localStorage.getItem('user');
+        if (userDataString) {
+            try {
+                const user: AppUser = JSON.parse(userDataString);
+                if (user?.email) {
+                    const result = await checkAndClearUserNotifications(user.email);
+                    
+                    if (result && result.notifications && result.notifications.length > 0) {
+                        result.notifications.forEach(notification => {
+                            toast({
+                                title: notification.title,
+                                description: notification.description,
+                                duration: 10000,
+                            });
+                        });
+
+                        if (result.user) {
+                            // If the backend returned updated user data (with new token balance),
+                            // update localStorage and dispatch an event to notify other components.
+                            localStorage.setItem('user', JSON.stringify(result.user));
+                            window.dispatchEvent(new Event('userUpdated'));
+                        }
+                    } else if (result && result.user && JSON.stringify(result.user) !== JSON.stringify(user)) {
+                        // This handles cases where there's no notification, but user data
+                        // (like tokens or role) has changed on the backend.
+                        localStorage.setItem('user', JSON.stringify(result.user));
+                        window.dispatchEvent(new Event('userUpdated'));
+                    }
+                }
+            } catch (error) {
+                console.error("Failed to check or process notifications:", error);
+            }
+        }
+    }, [toast]);
+    
+    useEffect(() => {
+        // This effect runs on initial mount and whenever the user navigates to a new page (pathname changes).
+        checkForNotifications();
+    }, [pathname, checkForNotifications]);
+
+
   return (
     <CartProvider>
         <div className="relative flex min-h-screen flex-col">
