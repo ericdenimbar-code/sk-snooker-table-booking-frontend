@@ -2,6 +2,10 @@
 import { NextResponse } from 'next/server';
 import admin from 'firebase-admin';
 import type { Firestore } from 'firebase-admin/firestore';
+import { getRoomSettings } from '@/app/admin/settings/actions';
+import { sendTopUpConfirmationEmail } from '@/lib/email';
+import type { User as AppUser } from '@/types';
+
 
 // ============================================================================
 //  Firebase Admin SDK Initialization (Self-Contained)
@@ -140,10 +144,18 @@ export async function POST(request: Request) {
     }
         
     const userDoc = userSnapshot.docs[0];
-    console.log(`[API] 找到用戶 "${userDoc.data().email}" (ID: ${userDoc.id}). 準備開始資料庫交易...`);
+    const userData = { id: userDoc.id, ...userDoc.data() } as AppUser;
+    console.log(`[API] 找到用戶 "${userData.email}" (ID: ${userDoc.id}). 準備開始資料庫交易...`);
+    
+    let finalUserTokens = 0;
 
     await db.runTransaction(async (transaction) => {
        const tokenQuantity = requestData.tokenQuantity;
+       
+       const freshUserDoc = await transaction.get(userDoc.ref);
+       const currentTokens = freshUserDoc.data()?.tokens ?? 0;
+       finalUserTokens = currentTokens + tokenQuantity;
+
        transaction.update(userDoc.ref, { tokens: admin.firestore.FieldValue.increment(tokenQuantity) });
        transaction.update(requestDoc.ref, { 
            status: 'completed', 
@@ -153,6 +165,19 @@ export async function POST(request: Request) {
     });
     
     console.log(`[API] 成功: 請求 ${requestDoc.id} 的交易已完成。`);
+
+    // --- Post-transaction side effect: Send Email ---
+    try {
+        const settings = await getRoomSettings('1');
+        if (settings) {
+            await sendTopUpConfirmationEmail(userData, requestData.tokenQuantity, finalUserTokens, settings.contactInfo);
+        } else {
+            console.error(`[API][CRITICAL] Failed to send top-up email to ${userData.email}: Cannot load settings.`);
+        }
+    } catch (emailError: any) {
+        console.error(`[API][CRITICAL] Transaction for ${requestDoc.id} succeeded, but email sending failed:`, emailError);
+    }
+    
     return NextResponse.json({ status: 'success', message: `Request ${requestDoc.id} processed.` });
 
   } catch (error: any) {
