@@ -20,9 +20,10 @@ type SettingsPanelProps = {
   onSettingsChange: React.Dispatch<React.SetStateAction<RoomSettings>>;
   isSubmitting: boolean;
   setIsSubmitting: React.Dispatch<React.SetStateAction<boolean>>;
+  room: { id: string }; // Add room prop to get the ID
 };
 
-function SettingsPanel({ roomName, settings, onSettingsChange, isSubmitting, setIsSubmitting }: SettingsPanelProps) {
+function SettingsPanel({ roomName, settings, onSettingsChange, isSubmitting, setIsSubmitting, room }: SettingsPanelProps) {
   const { toast } = useToast();
 
   const {
@@ -62,7 +63,8 @@ function SettingsPanel({ roomName, settings, onSettingsChange, isSubmitting, set
 
   const handleSubmit = async (data: Partial<RoomSettings>, sectionName: string) => {
     setIsSubmitting(true);
-    const result = await updateRoomSettings(settings.id, data);
+    // Use the passed room.id instead of settings.id
+    const result = await updateRoomSettings(room.id, data);
     if (result.success) {
       toast({
         title: `${roomName} 已更新`,
@@ -375,12 +377,14 @@ export function SettingsForm({ initialRoom1Settings, initialRoom2Settings, initi
           <TabsTrigger value="2">枱號二</TabsTrigger>
         </TabsList>
         <TabsContent value="1" className="space-y-6 mt-6">
-          <SettingsPanel roomName="枱號一" settings={room1Settings} onSettingsChange={setRoom1Settings} isSubmitting={isSubmitting} setIsSubmitting={setIsSubmitting} />
+          <SettingsPanel roomName="枱號一" settings={room1Settings} onSettingsChange={setRoom1Settings} isSubmitting={isSubmitting} setIsSubmitting={setIsSubmitting} room={{ id: '1' }} />
         </TabsContent>
         <TabsContent value="2" className="space-y-6 mt-6">
-          <SettingsPanel roomName="枱號二" settings={room2Settings} onSettingsChange={setRoom2Settings} isSubmitting={isSubmitting} setIsSubmitting={setIsSubmitting} />
+          <SettingsPanel roomName="枱號二" settings={room2Settings} onSettingsChange={setRoom2Settings} isSubmitting={isSubmitting} setIsSubmitting={setIsSubmitting} room={{ id: '2' }} />
         </TabsContent>
       </Tabs>
     </div>
   );
 }
+
+    
