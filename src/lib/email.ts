@@ -6,6 +6,7 @@ import type { Reservation } from '@/types';
 import type { ContactInfo } from '@/app/admin/settings/actions';
 import type { User as AppUser } from '@/app/admin/users/actions';
 import { format } from 'date-fns';
+import { formatInTimeZone } from 'date-fns-tz';
 
 
 const EMAIL_SERVER_USER = process.env.EMAIL_SERVER_USER;
@@ -129,7 +130,7 @@ export async function sendTopUpConfirmationEmail(
                 <hr>
                 <h3>增值詳情：</h3>
                 <ul>
-                    <li><strong>增值時間:</strong> ${format(new Date(), 'yyyy-MM-dd HH:mm:ss')}</li>
+                    <li><strong>增值時間:</strong> ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Hong_Kong', hour12: false }).replace(/,/, '')}</li>
                     <li><strong>增值金額:</strong> HKD ${topUpAmount.toFixed(2)}</li>
                     <li><strong>最新餘額:</strong> <strong>HKD ${newBalance.toFixed(2)}</strong></li>
                 </ul>
@@ -154,5 +155,3 @@ export async function sendTopUpConfirmationEmail(
         return false;
     }
 }
-
-    
