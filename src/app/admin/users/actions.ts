@@ -15,8 +15,10 @@ type ServerActionResponse = {
 export async function getUserBookingHistory(email: string): Promise<ServerActionResponse> {
     if (!db) return { success: false, error: 'Database connection failed' };
     try {
-        const snapshot = await db.collection('reservations').where('userEmail', '==', email).orderBy('bookingDate', 'desc').get();
+        const snapshot = await db.collection('reservations').where('userEmail', '==', email).get();
         const reservations = snapshot.docs.map(doc => doc.data()) as Reservation[];
+        // Sort in code to avoid needing a composite index
+        reservations.sort((a, b) => new Date(b.bookingDate).getTime() - new Date(a.bookingDate).getTime());
         return { success: true, reservations };
     } catch (e: any) {
         return { success: false, error: e.message };
@@ -26,8 +28,10 @@ export async function getUserBookingHistory(email: string): Promise<ServerAction
 export async function getUserTopUpHistory(email: string): Promise<ServerActionResponse> {
     if (!db) return { success: false, error: 'Database connection failed' };
     try {
-        const snapshot = await db.collection('tokenRequests').where('userEmail', '==', email).orderBy('requestDate', 'desc').get();
+        const snapshot = await db.collection('tokenRequests').where('userEmail', '==', email).get();
         const requests = snapshot.docs.map(doc => doc.data()) as TokenPurchaseRequest[];
+         // Sort in code to avoid needing a composite index
+        requests.sort((a, b) => new Date(b.requestDate).getTime() - new Date(a.requestDate).getTime());
         return { success: true, requests };
     } catch (e: any) {
         return { success: false, error: e.message };
