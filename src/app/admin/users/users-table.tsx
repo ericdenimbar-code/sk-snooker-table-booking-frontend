@@ -1,6 +1,8 @@
+
 'use client';
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import type { User as AppUser, Reservation, TokenPurchaseRequest } from '@/types';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -9,43 +11,181 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { MoreHorizontal, Loader2, Database, PlayCircle, Phone, Mail, FilterX, Trash2 } from 'lucide-react';
+import { MoreHorizontal, Loader2, Database, Phone, Mail, FilterX, Trash2, RefreshCw, History, Info } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { updateUser, adjustUserTokens, resetUserPassword, deleteUser, type User } from './actions';
+import { updateUser, adjustUserTokens, resetUserPassword, deleteUser, getAllUsers, getUserBookingHistory, getUserTopUpHistory } from './actions';
+import { format } from 'date-fns';
 
-type UsersTableProps = {
-  initialUsers: User[];
-};
+function HistoryDialog({ user, open, onOpenChange }: { user: AppUser | null, open: boolean, onOpenChange: (open: boolean) => void }) {
+    const [bookings, setBookings] = useState<Reservation[]>([]);
+    const [topUps, setTopUps] = useState<TokenPurchaseRequest[]>([]);
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
-export function UsersTable({ initialUsers }: UsersTableProps) {
-  const [users, setUsers] = useState<User[]>(initialUsers);
+    useEffect(() => {
+        if (open && user) {
+            const fetchData = async () => {
+                setIsLoading(true);
+                setError(null);
+                try {
+                    const [bookingResult, topUpResult] = await Promise.all([
+                        getUserBookingHistory(user.email),
+                        getUserTopUpHistory(user.email)
+                    ]);
+
+                    if (bookingResult.success) {
+                        setBookings(bookingResult.reservations || []);
+                    } else {
+                        throw new Error(`無法載入預訂紀錄: ${bookingResult.error}`);
+                    }
+
+                    if (topUpResult.success) {
+                        setTopUps(topUpResult.requests || []);
+                    } else {
+                        throw new Error(`無法載入增值紀錄: ${topUpResult.error}`);
+                    }
+                } catch (e: any) {
+                    setError(e.message);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            fetchData();
+        }
+    }, [open, user]);
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-3xl max-h-[80vh] flex flex-col">
+                <DialogHeader>
+                    <DialogTitle>用戶歷史紀錄: {user?.name}</DialogTitle>
+                    <DialogDescription>{user?.email}</DialogDescription>
+                </DialogHeader>
+                <div className="flex-1 overflow-y-auto pr-2 space-y-6">
+                    {isLoading ? (
+                        <div className="flex justify-center items-center h-48">
+                            <Loader2 className="h-8 w-8 animate-spin" />
+                        </div>
+                    ) : error ? (
+                        <div className="text-destructive text-center p-4">{error}</div>
+                    ) : (
+                        <>
+                            <div>
+                                <h3 className="text-lg font-semibold mb-2">預訂紀錄</h3>
+                                {bookings.length > 0 ? (
+                                    <div className="border rounded-md">
+                                        <Table>
+                                            <TableHeader>
+                                                <TableRow>
+                                                    <TableHead>日期</TableHead>
+                                                    <TableHead>時段</TableHead>
+                                                    <TableHead>費用</TableHead>
+                                                    <TableHead>狀態</TableHead>
+                                                </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                                {bookings.map(b => (
+                                                    <TableRow key={b.id}>
+                                                        <TableCell>{b.date}</TableCell>
+                                                        <TableCell>{b.startTime} - {b.endTime}</TableCell>
+                                                        <TableCell>HKD {b.costInTokens}</TableCell>
+                                                        <TableCell><Badge variant={b.status === 'Cancelled' ? 'destructive' : 'secondary'}>{b.status}</Badge></TableCell>
+                                                    </TableRow>
+                                                ))}
+                                            </TableBody>
+                                        </Table>
+                                    </div>
+                                ) : <p className="text-sm text-muted-foreground">沒有預訂紀錄。</p>}
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-semibold mb-2">增值紀錄</h3>
+                                {topUps.length > 0 ? (
+                                     <div className="border rounded-md">
+                                        <Table>
+                                            <TableHeader>
+                                                <TableRow>
+                                                    <TableHead>日期</TableHead>
+                                                    <TableHead>金額</TableHead>
+                                                    <TableHead>狀態</TableHead>
+                                                </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                                {topUps.map(t => (
+                                                     <TableRow key={t.id}>
+                                                        <TableCell>{format(new Date(t.requestDate), 'yyyy-MM-dd HH:mm')}</TableCell>
+                                                        <TableCell>HKD {t.totalPriceHKD.toFixed(2)}</TableCell>
+                                                        <TableCell>
+                                                             <Badge variant={t.status === 'completed' ? 'secondary' : t.status === 'cancelled' ? 'destructive' : 'outline'}>{t.status}</Badge>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                ))}
+                                            </TableBody>
+                                        </Table>
+                                     </div>
+                                ) : <p className="text-sm text-muted-foreground">沒有增值紀錄。</p>}
+                            </div>
+                        </>
+                    )}
+                </div>
+                <DialogFooter>
+                    <Button variant="outline" onClick={() => onOpenChange(false)}>關閉</Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
+
+export function UsersTable({ initialUsers }: { initialUsers: AppUser[] }) {
   const { toast } = useToast();
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [users, setUsers] = useState(initialUsers);
+  const [selectedUser, setSelectedUser] = useState<AppUser | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // Dialog states
   const [isEditUserOpen, setIsEditUserOpen] = useState(false);
   const [isAdjustTokensOpen, setIsAdjustTokensOpen] = useState(false);
   const [isResetPasswordOpen, setIsResetPasswordOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [isHistoryDialogOpen, setIsHistoryDialogOpen] = useState(false);
   
   // Form input states
   const [currentName, setCurrentName] = useState('');
   const [currentEmail, setCurrentEmail] = useState('');
   const [currentPhone, setCurrentPhone] = useState('');
-  const [currentRole, setCurrentRole] = useState<User['role']>('User');
+  const [currentRole, setCurrentRole] = useState<AppUser['role']>('User');
   const [currentFpsNames, setCurrentFpsNames] = useState('');
   const [tokenAdjustment, setTokenAdjustment] = useState(0);
   
   const [searchTerm, setSearchTerm] = useState('');
 
-  // This effect ensures that if the parent page re-fetches data, our table's state is updated.
+  // Sync state with props
   useEffect(() => {
-    setUsers(initialUsers);
+    setUsers(initialUsers.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant')));
   }, [initialUsers]);
 
+  const syncUsers = useCallback(async () => {
+      setIsSyncing(true);
+      toast({ title: '正在同步...', description: '正在從後端資料庫重新整理使用者資料。' });
 
-  const handleOpenDialog = (user: User, dialogSetter: React.Dispatch<React.SetStateAction<boolean>>) => {
+      const result = await getAllUsers();
+      if (result.success && result.users) {
+          const freshUsers: AppUser[] = result.users;
+          freshUsers.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+          setUsers(freshUsers);
+          toast({ title: '同步成功', description: `已成功從資料庫載入 ${freshUsers.length} 位使用者。` });
+      } else {
+          toast({ 
+              variant: 'destructive', 
+              title: '同步失敗', 
+              description: result.error || '無法從資料庫獲取最新資料。'
+          });
+      }
+      setIsSyncing(false);
+  }, [toast]);
+
+  const handleOpenDialog = (user: AppUser, dialogSetter: React.Dispatch<React.SetStateAction<boolean>>) => {
     setSelectedUser(user);
     if (dialogSetter === setIsEditUserOpen) {
       setCurrentName(user.name);
@@ -65,24 +205,20 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
         name: currentName,
         email: currentEmail,
         phone: currentPhone,
-        role: currentRole as User['role'],
+        role: currentRole as AppUser['role'],
         fpsPayerNames: currentFpsNames,
       };
 
       const result = await updateUser(selectedUser.id, updatedData);
 
       if (result.success) {
-        toast({ title: '成功', description: '使用者資料已在後端更新。' });
-
-        // Update client-side state using a functional update to avoid stale state issues.
+        toast({ title: '成功', description: '使用者資料已更新。' });
         setUsers(prevUsers => {
           const updatedUsers = prevUsers.map(u => 
             u.id === selectedUser.id ? { ...u, ...updatedData } : u
           );
-          updatedUsers.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
-          return updatedUsers;
+          return updatedUsers.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
         });
-        
         setIsEditUserOpen(false);
       } else {
         throw new Error(result.error || '發生未知錯誤');
@@ -101,15 +237,12 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
     try {
       const result = await adjustUserTokens(selectedUser.id, adjustment);
       if (result.success) {
-        toast({ title: '成功', description: `餘額已在後端調整。` });
-
-        // Update client-side state
-        const newTokens = selectedUser.tokens + adjustment;
+        toast({ title: '成功', description: `餘額已調整。` });
+        const newTokens = (selectedUser.tokens || 0) + adjustment;
         setUsers(prevUsers => prevUsers.map(u => 
             u.id === selectedUser.id ? { ...u, tokens: newTokens } : u
         ));
         
-        // Also update the 'user' object in localStorage if the admin is editing themselves
         try {
             const currentUserJSON = localStorage.getItem('user');
             if (currentUserJSON) {
@@ -121,7 +254,7 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
                 }
             }
         } catch(error) {
-            console.error("Failed to sync token update with current user in localStorage", error);
+            console.error("Failed to sync token update with localStorage", error);
         }
 
         setIsAdjustTokensOpen(false);
@@ -201,13 +334,17 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
 
   return (
     <>
-       <div className="p-4 border-b">
+       <div className="p-4 border-b flex justify-between items-center">
         <Input
           placeholder="搜尋姓名、電郵或電話號碼..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           className="max-w-sm"
         />
+        <Button variant="outline" onClick={() => syncUsers()} disabled={isSyncing}>
+          {isSyncing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+          手動同步
+        </Button>
       </div>
       <div className="overflow-x-auto">
         <Table>
@@ -261,6 +398,10 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
                       <div className="flex flex-col text-sm">
                         <Button variant="ghost" className="justify-start px-2 py-1.5 h-auto" onClick={() => handleOpenDialog(user, setIsEditUserOpen)}>修改資料</Button>
                         <Button variant="ghost" className="justify-start px-2 py-1.5 h-auto" onClick={() => handleOpenDialog(user, setIsAdjustTokensOpen)}>調整餘額</Button>
+                        <Button variant="ghost" className="justify-start px-2 py-1.5 h-auto" onClick={() => handleOpenDialog(user, setIsHistoryDialogOpen)}>
+                            <History className="mr-2 h-4 w-4" />
+                            訂購紀錄
+                        </Button>
                         <Button variant="ghost" className="justify-start px-2 py-1.5 h-auto" onClick={() => handleOpenDialog(user, setIsResetPasswordOpen)}>重設密碼</Button>
                         <div className="my-1 h-px bg-border" />
                         <Button variant="ghost" className="text-destructive hover:text-destructive justify-start px-2 py-1.5 h-auto" onClick={() => handleOpenDialog(user, setIsDeleteDialogOpen)}>
@@ -317,7 +458,7 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
             </div>
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="role" className="text-right">權限</Label>
-              <Select value={currentRole} onValueChange={(value) => setCurrentRole(value as User['role'])}>
+              <Select value={currentRole} onValueChange={(value) => setCurrentRole(value as AppUser['role'])}>
                 <SelectTrigger className="col-span-3">
                   <SelectValue placeholder="選擇權限" />
                 </SelectTrigger>
@@ -361,7 +502,7 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
             <div className="grid grid-cols-4 items-center gap-4">
               <div />
               <p className="col-span-3 text-sm text-muted-foreground">
-                調整後總數：{selectedUser ? selectedUser.tokens + (Number(tokenAdjustment) || 0) : 0}
+                調整後總數：{selectedUser ? (selectedUser.tokens || 0) + (Number(tokenAdjustment) || 0) : 0}
               </p>
             </div>
           </div>
@@ -408,6 +549,8 @@ export function UsersTable({ initialUsers }: UsersTableProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <HistoryDialog user={selectedUser} open={isHistoryDialogOpen} onOpenChange={setIsHistoryDialogOpen} />
     </>
   );
 }

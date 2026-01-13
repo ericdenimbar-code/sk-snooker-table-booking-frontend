@@ -1,20 +1,10 @@
+
 'use server';
 
-import { revalidatePath } from 'next/cache';
 import { db, auth } from '@/lib/firebase-admin';
-import { FieldValue } from 'firebase-admin/firestore';
-
-// Define the User type for consistency
-export type User = {
-  id: string;
-  name: string;
-  email: string;
-  phone: string;
-  tokens: number;
-  role: 'User' | 'VIP' | 'VVIP' | 'Admin';
-  joinedDate: string;
-  fpsPayerNames?: string; // New field for FPS payer identification names
-};
+import { revalidatePath } from 'next/cache';
+import type { User as AppUser, Reservation, TokenPurchaseRequest } from '@/types';
+import * as admin from 'firebase-admin';
 
 type ServerActionResponse = {
     success: boolean;
@@ -22,152 +12,142 @@ type ServerActionResponse = {
     [key: string]: any;
 };
 
-
-// Action to get a user by their email
-export async function getUserByEmail(email: string): Promise<User | null> {
-    if (!db) return null;
+export async function getUserBookingHistory(email: string): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: 'Database connection failed' };
     try {
-        const usersRef = db.collection('users');
-        const querySnapshot = await usersRef.where('email', '==', email).limit(1).get();
+        const snapshot = await db.collection('reservations').where('userEmail', '==', email).orderBy('bookingDate', 'desc').get();
+        const reservations = snapshot.docs.map(doc => doc.data()) as Reservation[];
+        return { success: true, reservations };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+}
 
-        if (querySnapshot.empty) {
+export async function getUserTopUpHistory(email: string): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: 'Database connection failed' };
+    try {
+        const snapshot = await db.collection('tokenRequests').where('userEmail', '==', email).orderBy('requestDate', 'desc').get();
+        const requests = snapshot.docs.map(doc => doc.data()) as TokenPurchaseRequest[];
+        return { success: true, requests };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+}
+
+
+export async function getUserByEmail(email: string): Promise<AppUser | null> {
+    if (!db) {
+        console.error("Failed to get Firebase Admin in getUserByEmail");
+        return null;
+    }
+
+    try {
+        const userQuery = await db.collection('users').where('email', '==', email).limit(1).get();
+        if (userQuery.empty) {
             return null;
         }
-
-        const docSnap = querySnapshot.docs[0];
-        const data = docSnap.data();
-        
+        const userData = userQuery.docs[0].data();
         return {
-            id: docSnap.id,
-            name: data.name || 'N/A',
-            email: data.email || 'N/A',
-            phone: data.phone || 'N/A',
-            tokens: data.tokens ?? 0,
-            role: data.role || 'User',
-            joinedDate: data.joinedDate || 'N/A',
-            fpsPayerNames: data.fpsPayerNames || '', // Ensure field is returned
-        };
-    } catch (error) {
-        console.error(`Error getting user by email ${email}:`, error);
+            id: userQuery.docs[0].id,
+            ...userData
+        } as AppUser;
+    } catch (e: any) {
+        console.error(`Error fetching user by email ${email}:`, e.message);
         return null;
     }
 }
 
+export async function updateUser(userId: string, data: Partial<Omit<AppUser, 'id' | 'tokens' | 'joinedDate'>>): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: `Database connection failed` };
 
-// Action to update a user's details
-export async function updateUser(userId: string, data: Partial<Omit<User, 'id' | 'tokens' | 'joinedDate'>>): Promise<ServerActionResponse> {
-  if (!db) {
-    return { success: false, error: '後端資料庫未連接。' };
-  }
-  try {
-    await db.collection('users').doc(userId).update(data);
-    revalidatePath('/admin/users');
-    return { success: true };
-  } catch (e: any) {
-    return { success: false, error: e.message };
-  }
-}
-
-// Action to adjust a user's token balance (atomic operation)
-export async function adjustUserTokens(userId: string, adjustment: number): Promise<ServerActionResponse> {
-  if (!db) {
-     return { success: false, error: '後端資料庫未連接。' };
-  }
-  try {
-    const userRef = db.collection('users').doc(userId);
-    await userRef.update({ tokens: FieldValue.increment(adjustment) });
-    revalidatePath('/admin/users');
-    revalidatePath('/(main)/purchase-tokens');
-    return { success: true };
-  } catch (e: any) {
-    return { success: false, error: e.message };
-  }
-}
-
-// Action to trigger a password reset (simulation) - Now handled by client-side Firebase Auth
-export async function resetUserPassword(email: string): Promise<ServerActionResponse> {
-  // This server action is no longer directly responsible for sending the email.
-  // The client will use Firebase Auth SDK directly.
-  console.log(`Password reset requested for: ${email}. Client will handle email dispatch.`);
-  return { success: true };
-}
-
-// Action to get all users from the database
-export async function getAllUsers(): Promise<ServerActionResponse> {
-  if (!db) {
-    return { success: false, error: '後端資料庫未連接。' };
-  }
-  try {
-    const usersCollection = db.collection('users');
-    const snapshot = await usersCollection.orderBy('name', 'asc').get();
-    if (snapshot.empty) {
-      return { success: true, users: [] };
-    }
-    const users = snapshot.docs.map(doc => {
-        const data = doc.data();
-        return {
-            id: doc.id,
-            name: data.name || 'N/A',
-            email: data.email || 'N/A',
-            phone: data.phone || 'N/A',
-            tokens: data.tokens ?? 0,
-            role: data.role || 'User',
-            joinedDate: data.joinedDate || 'N/A',
-            fpsPayerNames: data.fpsPayerNames || '', // Ensure field is returned
-        };
-    }) as User[];
-    return { success: true, users };
-  } catch (e: any) {
-    return { success: false, error: `從資料庫讀取使用者時發生錯誤: ${e.message}` };
-  }
-}
-
-// Action to create a user document in Firestore upon signup
-export async function createUserInFirestore(
-  userData: { id: string; email: string; name: string; phone: string }
-): Promise<ServerActionResponse> {
-  if (!db) {
-    return { success: false, error: '後端資料庫未連接。' };
-  }
-  try {
-    const userRef = db.collection('users').doc(userData.id);
-    await userRef.set({
-      email: userData.email,
-      name: userData.name,
-      phone: userData.phone,
-      tokens: 0, // Default starting tokens
-      role: 'User', // Default role
-      joinedDate: new Date().toISOString().split('T')[0], // 'YYYY-MM-DD'
-      fpsPayerNames: '', // Initialize with empty string
-    });
-    revalidatePath('/admin/users');
-    return { success: true };
-  } catch (e: any) {
-    return { success: false, error: e.message };
-  }
-}
-
-// Action to delete a user from Firestore and Firebase Auth
-export async function deleteUser(userId: string): Promise<ServerActionResponse> {
-    if (!db || !auth) {
-        return { success: false, error: '後端服務未完全連接。' };
-    }
     try {
-        // Step 1: Delete from Firestore
-        await db.collection('users').doc(userId).delete();
+        await db.collection('users').doc(userId).set(data, { merge: true });
+        revalidatePath('/admin/users');
+        revalidatePath('/account');
+        return { success: true };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+}
 
-        // Step 2: Delete from Firebase Authentication
+export async function adjustUserTokens(userId: string, adjustment: number): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: `Database connection failed` };
+    
+    try {
+        const userRef = db.collection('users').doc(userId);
+        await userRef.update({
+            tokens: admin.firestore.FieldValue.increment(adjustment)
+        });
+        revalidatePath('/admin/users');
+        revalidatePath('/(main)', 'layout');
+        return { success: true };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+}
+
+export async function resetUserPassword(email: string): Promise<ServerActionResponse> {
+    if (!auth) return { success: false, error: `Auth service failed` };
+
+    try {
+        await auth.generatePasswordResetLink(email);
+        return { success: true };
+    } catch (e: any) {
+        // Firebase often throws a "USER_NOT_FOUND" error. 
+        // For security, we can treat this as a success to prevent email enumeration.
+        if (e.code === 'auth/user-not-found') {
+            console.log(`Password reset requested for non-existent user: ${email}. Responding with success for security.`);
+            return { success: true };
+        }
+        return { success: false, error: e.message };
+    }
+}
+
+export async function getAllUsers(): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: `Database connection failed` };
+
+    try {
+        const snapshot = await db.collection('users').get();
+        const users = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as AppUser[];
+        return { success: true, users };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+}
+
+export async function createUserInFirestore(userData: { id: string; email: string; name: string; phone: string }): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: `Database connection failed` };
+    
+    const newUser: Omit<AppUser, 'id'> = {
+        name: userData.name,
+        email: userData.email,
+        phone: userData.phone,
+        tokens: 0,
+        role: 'User',
+        joinedDate: new Date().toISOString().split('T')[0], // 'YYYY-MM-DD'
+    };
+
+    try {
+        await db.collection('users').doc(userData.id).set(newUser);
+        return { success: true };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+}
+
+export async function deleteUser(userId: string): Promise<ServerActionResponse> {
+    if (!db || !auth) return { success: false, error: `Admin service failed` };
+
+    try {
+        // A transaction to delete both Auth and Firestore user atomically.
         await auth.deleteUser(userId);
-        
+        await db.collection('users').doc(userId).delete();
         revalidatePath('/admin/users');
         return { success: true };
     } catch (e: any) {
-        console.error(`Failed to delete user ${userId}:`, e);
-        // Handle cases where user might not exist in Auth but does in Firestore
-        if ((e as any).code === 'auth/user-not-found') {
-             revalidatePath('/admin/users');
-             return { success: true }; // Consider it a success if the end result is the user is gone
-        }
+        console.error(`Failed to fully delete user ${userId}:`, e);
+        // If Auth deletion succeeds but Firestore fails, you might have an orphaned profile.
+        // For this app's purpose, we report the overall error.
         return { success: false, error: e.message };
     }
 }

@@ -1,4 +1,6 @@
 
+import type { firestore } from 'firebase-admin';
+
 export type Reservation = {
   id: string; // Ref number
   roomId: string;
@@ -18,7 +20,7 @@ export type Reservation = {
   paymentMethod: 'tokens' | 'fps' | 'mixed'; // How the booking was paid for
   amountPaidWithTokens?: number;
   amountPaidWithFps?: number;
-  expiresAt?: admin.firestore.Timestamp; // For pending payments, use Firestore Timestamp
+  expiresAt?: firestore.Timestamp; // For pending payments, use Firestore Timestamp
 };
 
 export type TemporaryAccess = {
@@ -53,4 +55,15 @@ export type UserNotification = {
     description: string;
     timestamp: string; // ISO string
     isRead: boolean;
+};
+
+export type User = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  tokens: number;
+  role: 'Admin' | 'User' | 'VIP' | 'VVIP';
+  joinedDate: string;
+  fpsPayerNames?: string;
 };
