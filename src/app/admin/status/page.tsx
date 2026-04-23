@@ -39,12 +39,6 @@ export default async function AdminStatusPage() {
         dbStatusMessage = '連線失敗。請檢查您的 .env.local 檔案和伺服器日誌。';
     }
 
-    const firebaseEnvVars = [
-        { name: 'FIREBASE_PROJECT_ID', present: !!process.env.FIREBASE_PROJECT_ID, preview: getVarPreview(process.env.FIREBASE_PROJECT_ID) },
-        { name: 'FIREBASE_CLIENT_EMAIL', present: !!process.env.FIREBASE_CLIENT_EMAIL, preview: getVarPreview(process.env.FIREBASE_CLIENT_EMAIL) },
-        { name: 'FIREBASE_PRIVATE_KEY', present: !!process.env.FIREBASE_PRIVATE_KEY, preview: getVarPreview(process.env.FIREBASE_PRIVATE_KEY) },
-    ];
-    
     const googleEnvVars = [
         { name: 'GOOGLE_SERVICE_ACCOUNT_EMAIL', present: !!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL, preview: getVarPreview(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) },
         { name: 'GOOGLE_PRIVATE_KEY', present: !!process.env.GOOGLE_PRIVATE_KEY, preview: getVarPreview(process.env.GOOGLE_PRIVATE_KEY) },
@@ -52,9 +46,8 @@ export default async function AdminStatusPage() {
         { name: 'GOOGLE_CALENDAR_ID_ROOM_2', present: !!process.env.GOOGLE_CALENDAR_ID_ROOM_2, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_ROOM_2) },
     ];
 
-    const allFirebaseVarsPresent = firebaseEnvVars.every(v => v.present);
     const allGoogleVarsPresent = googleEnvVars.every(v => v.present);
-    const allVarsPresent = allFirebaseVarsPresent && allGoogleVarsPresent;
+    const systemHealthy = allGoogleVarsPresent && dbCanRead;
 
     const StatusIcon = ({isValid}: {isValid: boolean}) => 
         isValid ? <CheckCircle className="h-5 w-5 text-green-500" /> : <XCircle className="h-5 w-5 text-red-500" />;
@@ -87,36 +80,19 @@ export default async function AdminStatusPage() {
 
             <Card>
                 <CardHeader>
-                    <CardTitle>Firebase 環境變數檢查</CardTitle>
+                    <CardTitle>Firestore 連線</CardTitle>
+                    <CardDescription>以實際讀取驗證應用程式與 Firestore 後端是否可用（不含憑證內容顯示）。</CardDescription>
                 </CardHeader>
                 <CardContent>
-                    <div className="space-y-2">
-                        {firebaseEnvVars.map(v => (
-                            <div key={v.name} className="flex items-center justify-between p-3 border rounded-lg">
-                                <div>
-                                    <code className="font-mono text-sm">{v.name}</code>
-                                    <p className="text-xs text-muted-foreground">{v.preview}</p>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <Badge variant={v.present ? 'secondary' : 'destructive'}>{v.present ? '已載入' : '遺失'}</Badge>
-                                    <StatusIcon isValid={v.present} />
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                     <Alert variant={allFirebaseVarsPresent && dbCanRead ? "default" : "destructive"} className="mt-4">
-                        {allFirebaseVarsPresent && dbCanRead ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
-                        <AlertTitle>
-                            {allFirebaseVarsPresent && dbCanRead ? 'Firebase 狀態正常' : 'Firebase 偵測到問題'}
-                        </AlertTitle>
-                        <AlertDescription>
-                            {dbStatusMessage}
-                        </AlertDescription>
+                    <Alert variant={dbCanRead ? 'default' : 'destructive'}>
+                        {dbCanRead ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+                        <AlertTitle>{dbCanRead ? '後端可讀取 Firestore' : 'Firestore 偵測到問題'}</AlertTitle>
+                        <AlertDescription>{dbStatusMessage}</AlertDescription>
                     </Alert>
                 </CardContent>
             </Card>
 
-             <Card>
+            <Card>
                 <CardHeader>
                     <CardTitle>Google Calendar 環境變數檢查</CardTitle>
                     <CardDescription>此處會顯示變數是否成功從您的 .env.local 檔案載入。</CardDescription>
@@ -148,13 +124,13 @@ export default async function AdminStatusPage() {
                 </CardContent>
             </Card>
             
-            <Alert variant={allVarsPresent && dbCanRead ? "default" : "destructive"}>
-                {allVarsPresent && dbCanRead ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+            <Alert variant={systemHealthy ? "default" : "destructive"}>
+                {systemHealthy ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
                 <AlertTitle>
-                    {allVarsPresent && dbCanRead ? '系統狀態正常' : '系統偵測到問題'}
+                    {systemHealthy ? '系統狀態正常' : '系統偵測到問題'}
                 </AlertTitle>
                 <AlertDescription>
-                     {allVarsPresent && dbCanRead 
+                     {systemHealthy
                         ? '後端服務已成功連接。需要從資料庫讀取資料的頁面應該可以正常運作。'
                         : '一個或多個後端設定不正確，這將會影響需要從資料庫讀取即時設定的頁面功能。請再次檢查您的 .env.local 檔案內容與格式是否正確，並確保您已重新啟動伺服器。'}
                 </AlertDescription>
@@ -162,5 +138,3 @@ export default async function AdminStatusPage() {
         </div>
     );
 }
-
-    
