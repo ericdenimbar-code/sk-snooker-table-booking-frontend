@@ -78,6 +78,7 @@ function HistoryDialog({ user, open, onOpenChange }: { user: AppUser | null, ope
                                             <TableHeader>
                                                 <TableRow>
                                                     <TableHead>日期</TableHead>
+                                                    <TableHead>預訂時間</TableHead>
                                                     <TableHead>時段</TableHead>
                                                     <TableHead>費用</TableHead>
                                                     <TableHead>狀態</TableHead>
@@ -87,6 +88,14 @@ function HistoryDialog({ user, open, onOpenChange }: { user: AppUser | null, ope
                                                 {bookings.map(b => (
                                                     <TableRow key={b.id}>
                                                         <TableCell>{b.date}</TableCell>
+                                                        <TableCell>
+                                                            {(() => {
+                                                                if (!b.bookingDate) return '-';
+                                                                const d = new Date(b.bookingDate);
+                                                                if (Number.isNaN(d.getTime())) return '-';
+                                                                return format(d, 'yyyy-MM-dd HH:mm');
+                                                            })()}
+                                                        </TableCell>
                                                         <TableCell>{b.startTime} - {b.endTime}</TableCell>
                                                         <TableCell>HKD {b.costInTokens}</TableCell>
                                                         <TableCell><Badge variant={b.status === 'Cancelled' ? 'destructive' : 'secondary'}>{b.status}</Badge></TableCell>
