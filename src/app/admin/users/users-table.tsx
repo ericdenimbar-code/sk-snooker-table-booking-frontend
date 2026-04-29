@@ -77,9 +77,9 @@ function HistoryDialog({ user, open, onOpenChange }: { user: AppUser | null, ope
                                         <Table>
                                             <TableHeader>
                                                 <TableRow>
-                                                    <TableHead>日期</TableHead>
-                                                    <TableHead>預訂時間</TableHead>
-                                                    <TableHead>時段</TableHead>
+                                                    <TableHead>確認時間</TableHead>
+                                                    <TableHead>使用日期</TableHead>
+                                                    <TableHead>使用時段</TableHead>
                                                     <TableHead>費用</TableHead>
                                                     <TableHead>狀態</TableHead>
                                                 </TableRow>
@@ -87,8 +87,7 @@ function HistoryDialog({ user, open, onOpenChange }: { user: AppUser | null, ope
                                             <TableBody>
                                                 {bookings.map(b => (
                                                     <TableRow key={b.id}>
-                                                        <TableCell>{b.date}</TableCell>
-                                                        <TableCell>
+                                                        <TableCell className="font-light">
                                                             {(() => {
                                                                 if (!b.bookingDate) return '-';
                                                                 const d = new Date(b.bookingDate);
@@ -96,7 +95,8 @@ function HistoryDialog({ user, open, onOpenChange }: { user: AppUser | null, ope
                                                                 return format(d, 'yyyy-MM-dd HH:mm');
                                                             })()}
                                                         </TableCell>
-                                                        <TableCell>{b.startTime} - {b.endTime}</TableCell>
+                                                        <TableCell className="font-semibold">{b.date}</TableCell>
+                                                        <TableCell className="font-semibold">{b.startTime} - {b.endTime}</TableCell>
                                                         <TableCell>HKD {b.costInTokens}</TableCell>
                                                         <TableCell><Badge variant={b.status === 'Cancelled' ? 'destructive' : 'secondary'}>{b.status}</Badge></TableCell>
                                                     </TableRow>
