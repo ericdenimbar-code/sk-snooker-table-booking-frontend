@@ -1,7 +1,6 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import * as XLSX from 'xlsx';
 import { FileSpreadsheet, Loader2 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -13,32 +12,24 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import type { Reservation } from '@/types';
 
-import { getReservationsForCalendarMonth } from './actions';
+import { exportReservationsExcel } from './actions';
 
-function partyLabel(r: Reservation): string {
-  if (r.isSoloPractice === true) {
-    return '1（一人練波）';
+function downloadBase64File(base64: string, fileName: string) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
   }
-  if (r.isSoloPractice === false) {
-    return '一般預訂';
-  }
-  return '—';
-}
-
-function rowsForSheet(reservations: Reservation[]) {
-  return reservations.map((r) => ({
-    預約日期: r.date,
-    開始時間: r.startTime,
-    結束時間: r.endTime,
-    客戶名稱: r.userName,
-    聯絡電話: r.userPhone,
-    桌號: r.roomName,
-    人數: partyLabel(r),
-    狀態: r.status,
-    代幣: r.costInTokens,
-  }));
+  const blob = new Blob([bytes], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export function ExportListClientPage() {
@@ -72,27 +63,21 @@ export function ExportListClientPage() {
 
     setBusy(true);
     try {
-      const result = await getReservationsForCalendarMonth(y, m);
-      if (!result.success || !result.reservations) {
+      const result = await exportReservationsExcel(y, m);
+      if (!result.success) {
         toast({
           variant: 'destructive',
-          title: '讀取失敗',
-          description: result.error ?? '未知錯誤',
+          title: '匯出失敗',
+          description: result.error,
         });
         return;
       }
 
-      const rows = rowsForSheet(result.reservations);
-      const ws = XLSX.utils.json_to_sheet(rows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '預約');
-      const padMonth = String(m).padStart(2, '0');
-      const fileName = `sk-booking-報表-${y}-${padMonth}.xlsx`;
-      XLSX.writeFile(wb, fileName);
+      downloadBase64File(result.base64, result.fileName);
 
       toast({
         title: '匯出完成',
-        description: `已下載 ${fileName}（${result.reservations.length} 筆）`,
+        description: `已下載 ${result.fileName}（${result.rowCount} 筆）`,
       });
     } finally {
       setBusy(false);
@@ -132,9 +117,9 @@ export function ExportListClientPage() {
               <SelectValue placeholder="月份" />
             </SelectTrigger>
             <SelectContent>
-              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                <SelectItem key={m} value={String(m)}>
-                  {m} 月
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((mo) => (
+                <SelectItem key={mo} value={String(mo)}>
+                  {mo} 月
                 </SelectItem>
               ))}
             </SelectContent>
