@@ -16,6 +16,7 @@ import {
   Building2,
   ShieldAlert,
   Loader2,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -89,6 +90,14 @@ function AdminNav({ onLinkClick }: { onLinkClick?: () => void }) {
       >
         <Coins className="h-4 w-4" />
         價目及內容設定
+      </Link>
+      <Link
+        href="/admin/export-list"
+        className={cn(linkClass, isActive('/admin/export-list') && activeLinkClass)}
+        onClick={handleClick}
+      >
+        <FileSpreadsheet className="h-4 w-4" />
+        匯出清單
       </Link>
       <Link
         href="/admin/status"
