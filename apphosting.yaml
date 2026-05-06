@@ -1,8 +1,6 @@
 kind: AppHostingConfiguration
 schemaVersion: v1
 
-# 只保留前端公開、不敏感的連線資訊
-# 敏感的變數（如日曆 ID、私鑰、密碼）已經在 Console 填好，不需要寫在這裡
 env:
   - variable: NEXT_PUBLIC_FIREBASE_API_KEY
   - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
