@@ -6,11 +6,36 @@ import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
 const isProduction = process.env.NODE_ENV === "production";
 
 const getEnvValue = (baseKey: string): string | undefined => {
-  // Priority:
-  // 1) Explicit per-environment key (e.g. NEXT_PUBLIC_FIREBASE_API_KEY_PRD / _UAT)
-  // 2) Existing generic key (e.g. NEXT_PUBLIC_FIREBASE_API_KEY)
-  const envSpecificKey = isProduction ? `${baseKey}_PRD` : `${baseKey}_UAT`;
-  return process.env[envSpecificKey] ?? process.env[baseKey];
+  // Next.js client-side env replacement requires static property access.
+  // Keep each key explicit to avoid runtime "Missing: apiKey" from dynamic indexing.
+  switch (baseKey) {
+    case "NEXT_PUBLIC_FIREBASE_API_KEY":
+      return isProduction
+        ? (process.env.NEXT_PUBLIC_FIREBASE_API_KEY_PRD ?? process.env.NEXT_PUBLIC_FIREBASE_API_KEY)
+        : (process.env.NEXT_PUBLIC_FIREBASE_API_KEY_UAT ?? process.env.NEXT_PUBLIC_FIREBASE_API_KEY);
+    case "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN":
+      return isProduction
+        ? (process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN_PRD ?? process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN)
+        : (process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN_UAT ?? process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN);
+    case "NEXT_PUBLIC_FIREBASE_PROJECT_ID":
+      return isProduction
+        ? (process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID_PRD ?? process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID)
+        : (process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID_UAT ?? process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID);
+    case "NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET":
+      return isProduction
+        ? (process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET_PRD ?? process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET)
+        : (process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET_UAT ?? process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET);
+    case "NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID":
+      return isProduction
+        ? (process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID_PRD ?? process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID)
+        : (process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID_UAT ?? process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID);
+    case "NEXT_PUBLIC_FIREBASE_APP_ID":
+      return isProduction
+        ? (process.env.NEXT_PUBLIC_FIREBASE_APP_ID_PRD ?? process.env.NEXT_PUBLIC_FIREBASE_APP_ID)
+        : (process.env.NEXT_PUBLIC_FIREBASE_APP_ID_UAT ?? process.env.NEXT_PUBLIC_FIREBASE_APP_ID);
+    default:
+      return undefined;
+  }
 };
 
 const firebaseConfig: FirebaseOptions = {
