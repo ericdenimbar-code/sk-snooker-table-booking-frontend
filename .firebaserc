@@ -1,5 +1,6 @@
 {
   "projects": {
-    "default": "sk-snooker-table-booking"
+    "uat": "sk-snooker-table-booking",
+    "production": "snooker-kingdom-booking-system"
   }
 }
