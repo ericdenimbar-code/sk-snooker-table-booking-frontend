@@ -1,3 +1,6 @@
+kind: AppHostingConfiguration
+schemaVersion: v1
+
 # apphosting.yaml
 env:
   - variable: NEXT_PUBLIC_FIREBASE_API_KEY
