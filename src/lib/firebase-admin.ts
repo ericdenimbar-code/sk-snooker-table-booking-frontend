@@ -13,6 +13,7 @@ const hasAdminConfig =
 if (hasAdminConfig && !admin.apps.length) {
   try {
     admin.initializeApp({
+      projectId: process.env.SERVICE_ACCOUNT_PROJECT_ID,
       credential: admin.credential.cert({
         projectId: process.env.SERVICE_ACCOUNT_PROJECT_ID,
         clientEmail: process.env.SERVICE_ACCOUNT_CLIENT_EMAIL,
