@@ -34,4 +34,16 @@ if (hasAdminConfig && !admin.apps.length) {
     console.warn("Firebase Admin SDK not initialized: Missing SERVICE_ACCOUNT environment variables.");
 }
 
+/** Server-side Firebase project id (Admin SDK or env), for diagnostics. */
+export function getFirebaseAdminProjectId(): string | null {
+  if (admin.apps.length > 0) {
+    try {
+      return admin.app().options.projectId ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return process.env.SERVICE_ACCOUNT_PROJECT_ID ?? null;
+}
+
 export { db, auth };
