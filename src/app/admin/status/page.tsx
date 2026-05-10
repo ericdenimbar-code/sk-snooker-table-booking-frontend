@@ -39,11 +39,16 @@ export default async function AdminStatusPage() {
         dbStatusMessage = '連線失敗。請檢查您的 .env.local 檔案和伺服器日誌。';
     }
 
+    // 須與 src/lib/google-calendar.ts 的 hasGoogleConfig 條件一致（含四個門禁日曆）
     const googleEnvVars = [
         { name: 'GOOGLE_SERVICE_ACCOUNT_EMAIL', present: !!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL, preview: getVarPreview(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) },
         { name: 'GOOGLE_PRIVATE_KEY', present: !!process.env.GOOGLE_PRIVATE_KEY, preview: getVarPreview(process.env.GOOGLE_PRIVATE_KEY) },
         { name: 'GOOGLE_CALENDAR_ID_ROOM_1', present: !!process.env.GOOGLE_CALENDAR_ID_ROOM_1, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_ROOM_1) },
         { name: 'GOOGLE_CALENDAR_ID_ROOM_2', present: !!process.env.GOOGLE_CALENDAR_ID_ROOM_2, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_ROOM_2) },
+        { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_1A', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_1A, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_1A) },
+        { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_1B', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_1B, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_1B) },
+        { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A) },
+        { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B) },
     ];
 
     const allGoogleVarsPresent = googleEnvVars.every(v => v.present);
@@ -95,7 +100,9 @@ export default async function AdminStatusPage() {
             <Card>
                 <CardHeader>
                     <CardTitle>Google Calendar 環境變數檢查</CardTitle>
-                    <CardDescription>此處會顯示變數是否成功從您的 .env.local 檔案載入。</CardDescription>
+                    <CardDescription>
+                        此處顯示伺服器環境變數是否已載入（本機對應 .env.local；正式環境對應託管後台／Secret 設定）。缺任一項時，後端將與 src/lib/google-calendar.ts 相同判定為未完整設定。
+                    </CardDescription>
                 </CardHeader>
                 <CardContent>
                     <div className="space-y-2">
