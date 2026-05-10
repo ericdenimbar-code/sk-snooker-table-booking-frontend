@@ -54,10 +54,17 @@ export default async function ContactUsPage() {
         )
     }
 
-    const { contactInfo } = settings;
+    const rawContact = settings.contactInfo;
+    const contactInfo = {
+        name: rawContact?.name ?? '',
+        email: rawContact?.email ?? '',
+        whatsapp: rawContact?.whatsapp ?? '',
+        address: rawContact?.address ?? '',
+        additionalInfo: rawContact?.additionalInfo ?? '',
+    };
 
-    // A small helper to clean up the phone number for the WhatsApp link
-    const whatsappLink = `https://wa.me/${contactInfo.whatsapp.replace(/\D/g, '')}`;
+    const whatsappDigits = contactInfo.whatsapp.replace(/\D/g, '');
+    const whatsappLink = whatsappDigits ? `https://wa.me/${whatsappDigits}` : '';
 
     return (
         <main className="flex flex-1 flex-col items-center p-4 sm:p-8">
@@ -86,7 +93,7 @@ export default async function ContactUsPage() {
                             )}
                             {contactInfo.whatsapp && (
                                 <InfoRow icon={<Phone className="h-5 w-5" />} label="WhatsApp">
-                                     <a href={whatsappLink} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                                     <a href={whatsappLink || '#'} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
                                         {contactInfo.whatsapp}
                                     </a>
                                 </InfoRow>
