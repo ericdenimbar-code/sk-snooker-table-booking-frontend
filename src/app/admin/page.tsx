@@ -1,13 +1,9 @@
-import type { RoomSettings } from './settings/actions';
+import { getRoomSettings } from './settings/actions';
 import { DashboardForm } from './dashboard-form';
 import { DashboardDiagnostics } from './dashboard-diagnostics';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Terminal } from 'lucide-react';
 import { db, getFirebaseAdminProjectId } from '@/lib/firebase-admin';
-
-const ROOM_SETTINGS_COLLECTION = 'roomSettings';
-const ROOM_DOC_ID_1 = '1';
-const ROOM_DOC_ID_2 = '2';
 
 function errorToJsonString(error: unknown): string {
   if (error instanceof Error) {
@@ -42,42 +38,14 @@ export default async function AdminDashboard() {
     );
   }
 
-  try {
-    const room1Ref = db.collection(ROOM_SETTINGS_COLLECTION).doc(ROOM_DOC_ID_1);
-    const room2Ref = db.collection(ROOM_SETTINGS_COLLECTION).doc(ROOM_DOC_ID_2);
+  const [room1Settings, room2Settings] = await Promise.all([getRoomSettings('1'), getRoomSettings('2')]);
 
-    const [room1Snap, room2Snap] = await Promise.all([room1Ref.get(), room2Ref.get()]);
-
-    if (!room1Snap.exists) {
-      throw new Error(
-        `Firestore 文件不存在：集合「${ROOM_SETTINGS_COLLECTION}」文件「${ROOM_DOC_ID_1}」（路徑 ${ROOM_SETTINGS_COLLECTION}/${ROOM_DOC_ID_1}，無多餘斜線或空格）`
-      );
-    }
-    if (!room2Snap.exists) {
-      throw new Error(
-        `Firestore 文件不存在：集合「${ROOM_SETTINGS_COLLECTION}」文件「${ROOM_DOC_ID_2}」（路徑 ${ROOM_SETTINGS_COLLECTION}/${ROOM_DOC_ID_2}）`
-      );
-    }
-
-    const room1Settings = room1Snap.data() as RoomSettings;
-    const room2Settings = room2Snap.data() as RoomSettings;
-
-    return (
-      <div className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1">
-          <h1 className="text-lg font-semibold md:text-2xl">管理員儀表板</h1>
-          <p className="text-xs text-muted-foreground font-mono">
-            Admin projectId：{adminProjectId ?? '(無法取得)'}
-          </p>
-        </div>
-        <p className="text-sm text-muted-foreground -mt-2">
-          您可以在此進行快捷設定。更詳細的網站設定請前往「價目及內容設定」。
-        </p>
-        <DashboardForm initialRoom1Settings={room1Settings} initialRoom2Settings={room2Settings} />
-      </div>
-    );
-  } catch (error) {
-    const hiddenPayload = errorToJsonString(error);
+  if (!room1Settings || !room2Settings) {
+    const hiddenPayload = errorToJsonString({
+      message: 'getRoomSettings returned null',
+      adminProjectId,
+      paths: ['roomSettings/1', 'roomSettings/2'],
+    });
 
     return (
       <div className="flex flex-col gap-6">
@@ -90,11 +58,10 @@ export default async function AdminDashboard() {
           <AlertTitle>資料讀取錯誤</AlertTitle>
           <AlertDescription className="space-y-2">
             <p>
-              從 Firestore 讀取網站設定時發生錯誤。請檢查 Firestore 權限或前往「價目及內容設定」儲存一次設定以自動建立。
+              無法從 Firestore 讀取或建立網站設定。請檢查 Firestore 權限與 Admin SDK 設定。
             </p>
             <p className="font-mono text-xs break-all">
-              Admin projectId：{adminProjectId ?? '(無法取得)'} · getDoc 對應路徑：{ROOM_SETTINGS_COLLECTION}/{ROOM_DOC_ID_1}
-              、{ROOM_SETTINGS_COLLECTION}/{ROOM_DOC_ID_2}
+              Admin projectId：{adminProjectId ?? '(無法取得)'} · 路徑：roomSettings/1、roomSettings/2
             </p>
           </AlertDescription>
         </Alert>
@@ -102,4 +69,19 @@ export default async function AdminDashboard() {
       </div>
     );
   }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <h1 className="text-lg font-semibold md:text-2xl">管理員儀表板</h1>
+        <p className="text-xs text-muted-foreground font-mono">
+          Admin projectId：{adminProjectId ?? '(無法取得)'}
+        </p>
+      </div>
+      <p className="text-sm text-muted-foreground -mt-2">
+        您可以在此進行快捷設定。更詳細的網站設定請前往「價目及內容設定」。
+      </p>
+      <DashboardForm initialRoom1Settings={room1Settings} initialRoom2Settings={room2Settings} />
+    </div>
+  );
 }

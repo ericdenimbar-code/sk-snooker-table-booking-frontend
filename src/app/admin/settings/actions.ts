@@ -75,22 +75,92 @@ export type HASettings = {
   webhookId: string;
 };
 
+// --- Default template (Firestore bootstrap) ---
+
+/** 48 × 30 分鐘時段（00:00–23:30），與 `reservation-client-page` 一致 */
+function defaultSlotCostsData(): SlotData[] {
+  return Array.from({ length: 48 }, (_, i) => {
+    const hours = Math.floor(i / 2);
+    const minutes = (i % 2) * 30;
+    const startTime = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    return { id: i + 1, timeLabel: startTime, startTime, cost: 0 };
+  });
+}
+
+const defaultPricingTiers: [PricingTier, PricingTier, PricingTier] = [
+  { title: '價格區間一', timeRange: '請於後台編輯', price: '$0' },
+  { title: '價格區間二', timeRange: '請於後台編輯', price: '$0' },
+  { title: '價格區間三', timeRange: '請於後台編輯', price: '$0' },
+];
+
+function getDefaultRoomSettingsTemplate(roomId: string): RoomSettings {
+  const roomLabel =
+    roomId === '1' ? '房間 1' : roomId === '2' ? '房間 2' : `房間 ${roomId}`;
+  return {
+    id: roomId,
+    name: roomLabel,
+    tokenPriceHKD: 1,
+    slotCostsData: defaultSlotCostsData(),
+    termsAndConditions:
+      '請於管理後台「價目及內容設定」編輯本房的預約條款及細則。首次部署時已由系統自動建立預設文件。',
+    purchaseTokensIntro:
+      '請於管理後台「價目及內容設定」編輯帳戶增值流程簡介。首次部署時已由系統自動建立預設文件。',
+    contactInfo: {
+      name: '',
+      email: '',
+      whatsapp: '',
+      address: '',
+      additionalInfo: '',
+    },
+    siteBranding: {
+      name: 'Snooker Kingdom Booking',
+      logoUrl: '',
+    },
+    selectRoomPage: {
+      title: '選擇枱號',
+      description: '請於後台編輯此頁標題與描述，並設定各房相片。',
+      room1ImageUrl: '',
+      room2ImageUrl: '',
+    },
+    newReservationPage: {
+      title: `新增預訂 (${roomLabel})`,
+      description: '請於後台編輯本頁內容與價目表區塊。',
+      pricingTiers: defaultPricingTiers.map((t) => ({ ...t })) as [PricingTier, PricingTier, PricingTier],
+    },
+  };
+}
+
+/** 將預設 `RoomSettings` 寫入 Firestore（等同首次建立地基） */
+export async function initializeDefaultSettings(roomId: string): Promise<RoomSettings | null> {
+  if (!db) return null;
+  try {
+    const payload = getDefaultRoomSettingsTemplate(roomId);
+    await db.collection('roomSettings').doc(roomId).set(payload);
+    revalidatePath('/admin/settings');
+    revalidatePath('/(main)', 'layout');
+    return payload;
+  } catch (e: unknown) {
+    console.error(`initializeDefaultSettings failed for room ${roomId}:`, e);
+    return null;
+  }
+}
+
 // --- Server Actions ---
 
 export async function getRoomSettings(roomId: string): Promise<RoomSettings | null> {
-    if (!db) return null;
-    try {
-        const docRef = db.collection('roomSettings').doc(roomId);
-        const docSnap = await docRef.get();
+  if (!db) return null;
+  try {
+    const docRef = db.collection('roomSettings').doc(roomId);
+    const docSnap = await docRef.get();
 
-        if (docSnap.exists) {
-            return docSnap.data() as RoomSettings;
-        }
-        return null;
-    } catch (e: any) {
-        console.error(`Error getting room settings for room ${roomId}:`, e);
-        return null;
+    if (!docSnap.exists) {
+      return await initializeDefaultSettings(roomId);
     }
+    return docSnap.data() as RoomSettings;
+  } catch (e: unknown) {
+    console.error(`Error getting room settings for room ${roomId}:`, e);
+    return null;
+  }
 }
 
 export async function updateRoomSettings(roomId: string, data: Partial<Omit<RoomSettings, 'id'>>): Promise<{success: boolean, error?: string}> {
