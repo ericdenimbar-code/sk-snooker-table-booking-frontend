@@ -20,9 +20,8 @@ type BookingReviewClientPageProps = {
 
 export function BookingReviewClientPage({ settings, initialReservations }: BookingReviewClientPageProps) {
   const { toast } = useToast();
-  
-  const { newReservationPage } = settings;
-  const { pricingTiers } = newReservationPage;
+
+  const pricingTiers = settings.newReservationPage?.pricingTiers ?? [];
 
   const [allReservations, setAllReservations] = useState<Reservation[]>(initialReservations);
   const [availability, setAvailability] = useState<Map<string, number>>(new Map());

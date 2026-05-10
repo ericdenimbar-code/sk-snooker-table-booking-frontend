@@ -1,12 +1,11 @@
-
-'use server';
-
 import { getRoomSettings } from '@/app/admin/settings/actions';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Terminal, Building2 } from 'lucide-react';
 import { db } from '@/lib/firebase-admin';
 import Link from 'next/link';
 import { BookingReviewClientPage } from './booking-review-client-page';
+
+export const dynamic = 'force-dynamic';
 
 export default async function BookingReviewPage() {
     // This server component fetches the necessary settings and branding info.
@@ -45,16 +44,18 @@ export default async function BookingReviewPage() {
         )
     }
 
+    const siteBranding = settings.siteBranding ?? { name: '', logoUrl: '' };
+
     return (
         <main className="flex flex-col items-center p-4 space-y-6 bg-background">
             {/* Group 1: Logo and Company Name */}
             <div className="text-center pt-6">
-                {settings.siteBranding.logoUrl ? (
-                    <img src={settings.siteBranding.logoUrl} alt="Logo" className="h-10 w-10 mx-auto object-contain" />
+                {siteBranding.logoUrl ? (
+                    <img src={siteBranding.logoUrl} alt="Logo" className="h-10 w-10 mx-auto object-contain" />
                 ) : (
                     <Building2 className="h-10 w-10 mx-auto text-primary" />
                 )}
-                <h1 className="text-lg font-bold mt-2 text-primary">{settings.siteBranding.name}</h1>
+                <h1 className="text-lg font-bold mt-2 text-primary">{siteBranding.name || '預約預覽'}</h1>
             </div>
 
             {/* Group 2: Contact Information */}
@@ -64,7 +65,7 @@ export default async function BookingReviewPage() {
             
             {/* Group 3: Read-only Calendar */}
             <BookingReviewClientPage
-                settings={settings}
+                settings={{ ...settings, siteBranding }}
                 initialReservations={[]} // Client will fetch live data
             />
         </main>
