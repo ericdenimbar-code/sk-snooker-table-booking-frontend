@@ -28,10 +28,9 @@ export default async function NewReservationPage() {
         )
     }
 
-    const [room1Settings, room2Settings] = await Promise.all([
-        getRoomSettings('1'),
-        getRoomSettings('2'),
-    ]);
+    // 順序建立 / 讀取，避免並行首次開站時重複 bootstrap 與 revalidate 競態
+    const room1Settings = await getRoomSettings('1');
+    const room2Settings = await getRoomSettings('2');
 
 
     if (!room1Settings || !room2Settings) {
@@ -41,7 +40,7 @@ export default async function NewReservationPage() {
                     <Terminal className="h-4 w-4" />
                     <AlertTitle>無法載入房間設定</AlertTitle>
                     <AlertDescription>
-                        無法從資料庫中找到房間設定。請嘗試在後台儲存一次設定以自動建立。
+                        系統已嘗試自動建立預設房間設定但未成功。請確認 Firebase 後端（服務帳號）對「roomSettings」集合具備讀寫權限；若已修復，請重新整理頁面。亦可至後台「價目及內容設定」手動儲存一次以寫入資料。
                     </AlertDescription>
                 </Alert>
             </main>

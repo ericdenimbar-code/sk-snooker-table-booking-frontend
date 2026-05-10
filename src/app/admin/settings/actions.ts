@@ -133,16 +133,20 @@ function getDefaultRoomSettingsTemplate(roomId: string): RoomSettings {
 /** 將預設 `RoomSettings` 寫入 Firestore（等同首次建立地基） */
 export async function initializeDefaultSettings(roomId: string): Promise<RoomSettings | null> {
   if (!db) return null;
+  const payload = getDefaultRoomSettingsTemplate(roomId);
   try {
-    const payload = getDefaultRoomSettingsTemplate(roomId);
     await db.collection('roomSettings').doc(roomId).set(payload);
-    revalidatePath('/admin/settings');
-    revalidatePath('/(main)', 'layout');
-    return payload;
   } catch (e: unknown) {
-    console.error(`initializeDefaultSettings failed for room ${roomId}:`, e);
+    console.error(`initializeDefaultSettings(set) failed for room ${roomId}:`, e);
     return null;
   }
+  try {
+    revalidatePath('/admin/settings');
+    revalidatePath('/(main)', 'layout');
+  } catch (e: unknown) {
+    console.warn(`revalidatePath after room bootstrap (${roomId}) skipped:`, e);
+  }
+  return payload;
 }
 
 // --- Server Actions ---
@@ -154,7 +158,14 @@ export async function getRoomSettings(roomId: string): Promise<RoomSettings | nu
     const docSnap = await docRef.get();
 
     if (!docSnap.exists) {
-      return await initializeDefaultSettings(roomId);
+      let created = await initializeDefaultSettings(roomId);
+      if (!created) {
+        const retry = await docRef.get();
+        if (retry.exists) {
+          created = retry.data() as RoomSettings;
+        }
+      }
+      return created;
     }
     return docSnap.data() as RoomSettings;
   } catch (e: unknown) {
