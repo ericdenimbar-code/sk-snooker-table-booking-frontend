@@ -10,8 +10,14 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useToast } from '@/hooks/use-toast';
 import type { RoomSettings, PaymentInfo } from '@/app/admin/settings/actions';
 import { CreditCard, Smartphone, Loader2, Info, Ban } from 'lucide-react';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import type { TokenPurchaseRequest } from '@/types';
-import { createTokenPurchaseRequest, getTokenPurchaseRequestsByUser, cancelTokenPurchaseRequest } from '@/app/admin/token-requests/actions';
+import {
+  createTokenPurchaseRequest,
+  getTokenPurchaseRequestsByUser,
+  cancelTokenPurchaseRequest,
+  expireStaleRequestingTokenOrdersForUser,
+} from '@/app/admin/token-requests/actions';
 import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';
 import Image from 'next/image';
@@ -162,9 +168,12 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
         const parsedUser: User = JSON.parse(userDataString);
         setUser(parsedUser);
         if (parsedUser.email) {
-            fetchHistory(parsedUser.email);
+          (async () => {
+            await expireStaleRequestingTokenOrdersForUser(parsedUser.email);
+            await fetchHistory(parsedUser.email);
+          })();
         } else {
-            setIsLoadingHistory(false);
+          setIsLoadingHistory(false);
         }
       } catch (error) {
         console.error('Failed to parse user data:', error);
@@ -180,11 +189,24 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
     return quantity * settings.tokenPriceHKD;
   }, [purchaseQuantity, settings.tokenPriceHKD]);
 
+  const blockingRequest = useMemo(
+    () => requests.find((r) => r.status === 'requesting' || r.status === 'processing'),
+    [requests],
+  );
+
   const handleReset = () => {
     setPurchaseQuantity('');
   };
 
   const handleConfirm = async () => {
+    if (blockingRequest) {
+      toast({
+        variant: 'destructive',
+        title: '無法提交',
+        description: '您已有進行中的增值請求，請先完成或等候處理。',
+      });
+      return;
+    }
     const quantity = Number(purchaseQuantity);
     if (!quantity || quantity <= 0) {
       toast({
@@ -290,6 +312,18 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
             <CardDescription>輸入您想增值的金額，並選擇付款方式。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
+            {blockingRequest && (
+              <Alert>
+                <Info className="h-4 w-4" />
+                <AlertTitle>已有進行中的增值請求</AlertTitle>
+                <AlertDescription>
+                  {blockingRequest.status === 'requesting'
+                    ? '您有一筆「等待付款」的增值請求'
+                    : '您有一筆「等待批核」的增值請求'}
+                  （參考編號 {blockingRequest.id}）。請完成或等候處理後再提交新申請。逾時未付款的請求會在進入本頁時由系統自動取消。
+                </AlertDescription>
+              </Alert>
+            )}
             <div className="grid gap-2">
               <Label htmlFor="quantity">增值金額 (港幣)</Label>
               <Input
@@ -326,7 +360,7 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
           </CardContent>
           <CardFooter className="flex justify-end gap-2">
             <Button variant="outline" onClick={handleReset}>重設</Button>
-            <Button onClick={handleConfirm} disabled={isSubmitting || !purchaseQuantity}>
+            <Button onClick={handleConfirm} disabled={isSubmitting || !purchaseQuantity || !!blockingRequest}>
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               確定
             </Button>

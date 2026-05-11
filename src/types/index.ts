@@ -47,6 +47,7 @@ export type TokenPurchaseRequest = {
   paymentMethod: 'fps' | 'bank' | 'admin_manual';
   expiresAt?: string; // ISO string for expiry, now optional
   linkedReservationId?: string; // ID of the reservation this purchase is for
+  notes?: string;
 };
 
 export type UserNotification = {

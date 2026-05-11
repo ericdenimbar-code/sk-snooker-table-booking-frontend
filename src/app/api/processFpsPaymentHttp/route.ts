@@ -3,8 +3,10 @@ import { NextResponse } from 'next/server';
 import admin from 'firebase-admin';
 import type { Firestore } from 'firebase-admin/firestore';
 import { getRoomSettings } from '@/app/admin/settings/actions';
-import { sendTopUpConfirmationEmail } from '@/lib/email';
-import type { User as AppUser } from '@/types';
+import { sendTopUpConfirmationEmail, sendProblemTransactionAlertEmails } from '@/lib/email';
+import type { User as AppUser, TokenPurchaseRequest } from '@/types';
+import { expireStaleRequestingOrders } from '@/lib/token-requests-firestore';
+import { fetchAdminAlertEmails } from '@/lib/admin-config-firestore';
 
 
 // ============================================================================
@@ -71,14 +73,6 @@ interface FpsPaymentPayload {
   secret: string;
 }
 
-type TokenPurchaseRequest = {
-  id: string;
-  userEmail: string;
-  tokenQuantity: number;
-  totalPriceHKD: number;
-  status: 'requesting' | 'processing' | 'completed' | 'cancelled';
-};
-
 // ============================================================================
 //  API POST Handler
 // ============================================================================
@@ -108,8 +102,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ status: 'error', message: 'Invalid amount' }, { status: 400 });
     }
 
-    console.log(`[API] 收到付款處理請求 - 金額: HKD ${amount}, 付款人: ${payer || 'N/A'}.`);
-    
+    const payerDisplay = payer?.trim() || '未知';
+    console.log(`[API] 收到付款處理請求 - 金額: HKD ${amount}, 付款人: ${payerDisplay}.`);
+
+    const expiredCount = await expireStaleRequestingOrders(db);
+    if (expiredCount > 0) {
+      console.log(`[API] 已自動取消 ${expiredCount} 筆逾時（>1 小時）的 requesting 訂單。`);
+    }
+
     const requestsQuery = db.collection('tokenRequests').where('status', '==', 'requesting');
     const requestSnapshot = await requestsQuery.get();
 
@@ -118,29 +118,64 @@ export async function POST(request: Request) {
       return NextResponse.json({ status: 'no_match', message: 'No pending requests found.' }, { status: 200 });
     }
 
-    // Manually filter by amount in the backend code to avoid needing a composite index.
-    const matchingDocs = requestSnapshot.docs.filter(doc => doc.data().totalPriceHKD === amount);
-    
+    const minAmount = amount - 10;
+    const maxAmount = amount + 10;
+    const matchingDocs = requestSnapshot.docs.filter((doc) => {
+      const total = doc.data().totalPriceHKD;
+      return typeof total === 'number' && total >= minAmount && total <= maxAmount;
+    });
+
+    const alertEmails = await fetchAdminAlertEmails(db);
+
     if (matchingDocs.length === 0) {
-        console.log(`[API] 找不到金額為 HKD ${amount} 的待處理請求。`);
-        return NextResponse.json({ status: 'no_match', message: 'No pending request for this amount.' }, { status: 200 });
+      console.log(`[API] 找不到 totalPriceHKD 在 [${minAmount}, ${maxAmount}] 範圍內的待處理請求。`);
+      return NextResponse.json({ status: 'no_match', message: 'No pending request for this amount.' }, { status: 200 });
     }
-    
+
     if (matchingDocs.length > 1) {
-        console.warn(`[API] 警告: 找到 ${matchingDocs.length} 個金額同樣為 HKD ${amount} 的待處理請求。需要手動批核以避免錯誤。`);
-        return NextResponse.json({ status: 'ambiguous_match', message: 'Multiple requests match this amount.' }, { status: 200 });
+      console.warn(
+        `[API] 警告: 找到 ${matchingDocs.length} 筆金額落在 HKD ${minAmount}–${maxAmount} 的待處理請求，需手動處理。`,
+      );
+      const listHtml = `<ul>${matchingDocs
+        .map((d) => {
+          const row = d.data() as TokenPurchaseRequest;
+          return `<li>請求 ${d.id}：${row.userEmail}，要求金額 HKD ${row.totalPriceHKD}，代幣 ${row.tokenQuantity}</li>`;
+        })
+        .join('')}</ul><p>收到轉帳金額：HKD ${amount}</p>`;
+      await sendProblemTransactionAlertEmails(alertEmails, payerDisplay, listHtml);
+      return NextResponse.json({ status: 'ambiguous_match', message: 'Multiple requests match this amount.' }, { status: 200 });
     }
 
     const requestDoc = matchingDocs[0];
     const requestData = requestDoc.data() as TokenPurchaseRequest;
     console.log(`[API] 找到唯一匹配! 請求 ID: ${requestDoc.id}，用戶: ${requestData.userEmail}.`);
 
+    const reqAmount = requestData.totalPriceHKD;
+    const actualAmount = amount;
+    const diff = actualAmount - reqAmount;
+    const ratio = reqAmount > 0 ? actualAmount / reqAmount : 0;
+    const tokensToCredit = Math.round(requestData.tokenQuantity * ratio);
+
+    if (!Number.isFinite(tokensToCredit) || tokensToCredit <= 0) {
+      const detail = `<p>無法依比例發放代幣（計算結果：${tokensToCredit}）。請求 ${requestDoc.id}，用戶 ${requestData.userEmail}，要求金額 HKD ${reqAmount}，收到 HKD ${actualAmount}。</p>`;
+      console.error(`[API] ${detail}`);
+      await sendProblemTransactionAlertEmails(alertEmails, payerDisplay, detail);
+      return NextResponse.json(
+        { status: 'error', message: 'Computed token credit is invalid; admins have been notified.' },
+        { status: 500 },
+      );
+    }
+
+    const notesLine = `要求金額: ${reqAmount}, 實際收到: ${actualAmount}, 差額: ${diff}。由 Apps Script 根據來自 ${payerDisplay} 的付款自動批核（按比例發放 ${tokensToCredit} 代幣）。`;
+
     const userQuery = db.collection('users').where('email', '==', requestData.userEmail).limit(1);
     const userSnapshot = await userQuery.get();
 
     if (userSnapshot.empty) {
-        console.error(`[API] 嚴重錯誤: 找到請求 ${requestDoc.id} 但在 'users' 集合中找不到用戶 ${requestData.userEmail}！`);
-        return NextResponse.json({ status: 'error', message: 'User profile not found in database.' }, { status: 500 });
+      console.error(`[API] 嚴重錯誤: 找到請求 ${requestDoc.id} 但在 'users' 集合中找不到用戶 ${requestData.userEmail}！`);
+      const detail = `<p>請求 ${requestDoc.id} 已匹配付款 HKD ${actualAmount}，但 Firestore 找不到用戶 ${requestData.userEmail}。</p>`;
+      await sendProblemTransactionAlertEmails(alertEmails, payerDisplay, detail);
+      return NextResponse.json({ status: 'error', message: 'User profile not found in database.' }, { status: 500 });
     }
         
     const userDoc = userSnapshot.docs[0];
@@ -150,17 +185,15 @@ export async function POST(request: Request) {
     let finalUserTokens = 0;
 
     await db.runTransaction(async (transaction) => {
-       const tokenQuantity = requestData.tokenQuantity;
-       
        const freshUserDoc = await transaction.get(userDoc.ref);
        const currentTokens = freshUserDoc.data()?.tokens ?? 0;
-       finalUserTokens = currentTokens + tokenQuantity;
+       finalUserTokens = currentTokens + tokensToCredit;
 
-       transaction.update(userDoc.ref, { tokens: admin.firestore.FieldValue.increment(tokenQuantity) });
+       transaction.update(userDoc.ref, { tokens: admin.firestore.FieldValue.increment(tokensToCredit) });
        transaction.update(requestDoc.ref, { 
            status: 'completed', 
            completionDate: new Date().toISOString(),
-           notes: `由 Apps Script 根據來自 ${payer || '未知'} 的付款自動批核。`
+           notes: notesLine,
         });
     });
     
@@ -170,7 +203,7 @@ export async function POST(request: Request) {
     try {
         const settings = await getRoomSettings('1');
         if (settings) {
-            await sendTopUpConfirmationEmail(userData, requestData.tokenQuantity, finalUserTokens, settings.contactInfo);
+            await sendTopUpConfirmationEmail(userData, tokensToCredit, finalUserTokens, settings.contactInfo);
         } else {
             console.error(`[API][CRITICAL] Failed to send top-up email to ${userData.email}: Cannot load settings.`);
         }

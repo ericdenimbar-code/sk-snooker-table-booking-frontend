@@ -8,6 +8,7 @@ import { adjustUserTokens, getUserByEmail, type User as AppUser } from '../users
 import admin from 'firebase-admin';
 import { sendTopUpConfirmationEmail } from '@/lib/email';
 import { getRoomSettings } from '../settings/actions';
+import { expireStaleRequestingOrders } from '@/lib/token-requests-firestore';
 
 
 type ServerActionResponse = {
@@ -57,6 +58,26 @@ export async function getAllTokenPurchaseRequests(): Promise<ServerActionRespons
     } catch (e: any) {
         return { success: false, error: `從資料庫讀取請求時發生錯誤: ${e.message}` };
     }
+}
+
+/** 取消該用戶超過 1 小時仍為 requesting 的增值請求（供購買頁進入時呼叫）。 */
+export async function expireStaleRequestingTokenOrdersForUser(
+  userEmail: string,
+): Promise<ServerActionResponse & { expiredCount?: number }> {
+  if (!db) {
+    return { success: false, error: '後端資料庫未連接。' };
+  }
+  if (!userEmail?.trim()) {
+    return { success: false, error: '缺少使用者電郵。' };
+  }
+  try {
+    const expiredCount = await expireStaleRequestingOrders(db, { userEmail: userEmail.trim() });
+    revalidatePath('/purchase-tokens');
+    revalidatePath('/admin/token-requests');
+    return { success: true, expiredCount };
+  } catch (e: any) {
+    return { success: false, error: e.message };
+  }
 }
 
 // --- Get all requests for a specific user ---

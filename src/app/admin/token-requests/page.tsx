@@ -4,6 +4,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Terminal } from 'lucide-react';
 import { getAllTokenPurchaseRequests } from './actions';
 import { RequestsTable } from './requests-table';
+import { AlertEmailsSettings } from './alert-emails-settings';
 import { db } from '@/lib/firebase-admin';
 
 // This directive forces the page to be dynamically rendered on every request.
@@ -47,6 +48,7 @@ export default async function AdminTokenRequestsPage() {
     return (
         <div className="flex flex-col gap-4">
             <h1 className="text-lg font-semibold md:text-2xl">增值審批</h1>
+            <AlertEmailsSettings />
              <Card>
                 <CardHeader>
                     <CardTitle>所有增值請求</CardTitle>

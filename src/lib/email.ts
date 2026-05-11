@@ -155,3 +155,42 @@ export async function sendTopUpConfirmationEmail(
         return false;
     }
 }
+
+export async function sendProblemTransactionAlertEmails(
+  recipients: string[],
+  payerName: string,
+  htmlBody: string,
+): Promise<void> {
+  if (!recipients.length) {
+    console.warn('[Email] 問題交易警報：未設定任何 alertEmails，略過發送。');
+    return;
+  }
+  if (!transporter || !EMAIL_SERVER_USER || !EMAIL_FROM_NAME) {
+    console.error('[Email] 問題交易警報：郵件服務未設定，無法發送。');
+    return;
+  }
+
+  const subject = `[問題交易] - ${payerName}`;
+
+  for (const to of recipients) {
+    try {
+      await transporter.sendMail({
+        from: `"${EMAIL_FROM_NAME}" <${EMAIL_SERVER_USER}>`,
+        to,
+        subject,
+        html: `
+            <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+                <h2>問題交易通知</h2>
+                <p>付款人（銀行顯示名稱）: <strong>${payerName}</strong></p>
+                ${htmlBody}
+                <hr>
+                <p style="font-size:12px;color:#666;">此郵件由系統自動發出。</p>
+            </div>
+        `,
+      });
+      console.log(`✅ 問題交易警報已發送至 ${to}`);
+    } catch (error) {
+      console.error(`❌ 問題交易警報發送至 ${to} 失敗:`, error);
+    }
+  }
+}
