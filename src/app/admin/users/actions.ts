@@ -2,7 +2,7 @@
 'use server';
 
 import { db, auth } from '@/lib/firebase-admin';
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, unstable_noStore as noStore } from 'next/cache';
 import type { User as AppUser, Reservation, TokenPurchaseRequest } from '@/types';
 import * as admin from 'firebase-admin';
 
@@ -40,6 +40,7 @@ export async function getUserTopUpHistory(email: string): Promise<ServerActionRe
 
 
 export async function getUserByEmail(email: string): Promise<AppUser | null> {
+    noStore();
     if (!db) {
         console.error("Failed to get Firebase Admin in getUserByEmail");
         return null;

@@ -167,6 +167,7 @@ export async function POST(request: Request) {
     }
 
     const notesLine = `要求金額: ${reqAmount}, 實際收到: ${actualAmount}, 差額: ${diff}。由 Apps Script 根據來自 ${payerDisplay} 的付款自動批核（按比例發放 ${tokensToCredit} 代幣）。`;
+    const hasDiscrepancy = Math.abs(actualAmount - reqAmount) > 0.005;
 
     const userQuery = db.collection('users').where('email', '==', requestData.userEmail).limit(1);
     const userSnapshot = await userQuery.get();
@@ -194,6 +195,7 @@ export async function POST(request: Request) {
            status: 'completed', 
            completionDate: new Date().toISOString(),
            notes: notesLine,
+           hasDiscrepancy,
         });
     });
     
@@ -203,7 +205,9 @@ export async function POST(request: Request) {
     try {
         const settings = await getRoomSettings('1');
         if (settings) {
-            await sendTopUpConfirmationEmail(userData, tokensToCredit, finalUserTokens, settings.contactInfo);
+            await sendTopUpConfirmationEmail(userData, tokensToCredit, finalUserTokens, settings.contactInfo, {
+              hasDiscrepancy,
+            });
         } else {
             console.error(`[API][CRITICAL] Failed to send top-up email to ${userData.email}: Cannot load settings.`);
         }

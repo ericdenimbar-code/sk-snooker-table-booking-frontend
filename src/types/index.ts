@@ -48,6 +48,8 @@ export type TokenPurchaseRequest = {
   expiresAt?: string; // ISO string for expiry, now optional
   linkedReservationId?: string; // ID of the reservation this purchase is for
   notes?: string;
+  /** 自動對帳時實際入帳金額與申請金額不一致 */
+  hasDiscrepancy?: boolean;
 };
 
 export type UserNotification = {

@@ -9,32 +9,28 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import type { RoomSettings, PaymentInfo } from '@/app/admin/settings/actions';
-import { CreditCard, Smartphone, Loader2, Info, Ban } from 'lucide-react';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import type { TokenPurchaseRequest } from '@/types';
+import { CreditCard, Smartphone, Loader2, Info, Ban, AlertCircle } from 'lucide-react';
+import type { TokenPurchaseRequest, User } from '@/types';
 import {
   createTokenPurchaseRequest,
   getTokenPurchaseRequestsByUser,
   cancelTokenPurchaseRequest,
   expireStaleRequestingTokenOrdersForUser,
 } from '@/app/admin/token-requests/actions';
+import { getUserByEmail } from '@/app/admin/users/actions';
+import { db } from '@/lib/firebase';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';
 import Image from 'next/image';
+
+const TOP_UP_AMOUNT_DISCREPANCY_NOTICE =
+  '請注意：此記錄與要求金額有出入，我們以最後收到轉帳之金額作最後的充值額。';
 
 type PurchaseHistoryProps = {
   requests: TokenPurchaseRequest[];
   isLoading: boolean;
   refreshHistory: () => void;
-};
-
-type User = {
-  id: string;
-  name: string;
-  email: string;
-  phone: string;
-  role: 'admin' | 'user';
-  tokens?: number;
 };
 
 function PurchaseHistory({ requests, isLoading, refreshHistory }: PurchaseHistoryProps) {
@@ -118,6 +114,15 @@ function PurchaseHistory({ requests, isLoading, refreshHistory }: PurchaseHistor
                 </p>
               </div>
             </div>
+            {req.status === 'completed' && req.hasDiscrepancy && (
+              <div
+                role="status"
+                className="flex gap-2 rounded-md border border-amber-400/70 bg-amber-50 px-3 py-2.5 text-sm font-medium text-amber-900 dark:border-amber-600/50 dark:bg-amber-950/40 dark:text-amber-100"
+              >
+                <AlertCircle className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
+                <span>{TOP_UP_AMOUNT_DISCREPANCY_NOTICE}</span>
+              </div>
+            )}
             {req.status === 'requesting' && (
               <div className="flex items-center gap-2">
                 <Button size="sm" variant="outline" className="w-full" onClick={() => handleCancelRequest(req.id)} disabled={isCancelling !== null}>
@@ -163,26 +168,87 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
 
   useEffect(() => {
     const userDataString = localStorage.getItem('user');
-    if (userDataString) {
-      try {
-        const parsedUser: User = JSON.parse(userDataString);
-        setUser(parsedUser);
-        if (parsedUser.email) {
-          (async () => {
-            await expireStaleRequestingTokenOrdersForUser(parsedUser.email);
-            await fetchHistory(parsedUser.email);
-          })();
-        } else {
-          setIsLoadingHistory(false);
-        }
-      } catch (error) {
-        console.error('Failed to parse user data:', error);
-        setIsLoadingHistory(false);
-      }
-    } else {
+    if (!userDataString) {
+      setUser(null);
       setIsLoadingHistory(false);
+      return;
     }
+
+    let parsedUser: User;
+    try {
+      parsedUser = JSON.parse(userDataString) as User;
+    } catch (error) {
+      console.error('Failed to parse user data:', error);
+      setIsLoadingHistory(false);
+      return;
+    }
+
+    setUser(parsedUser);
+
+    if (!parsedUser.email) {
+      setIsLoadingHistory(false);
+      return;
+    }
+
+    (async () => {
+      await expireStaleRequestingTokenOrdersForUser(parsedUser.email);
+      const fresh = await getUserByEmail(parsedUser.email);
+      if (fresh) {
+        setUser(fresh);
+        localStorage.setItem('user', JSON.stringify(fresh));
+      }
+      await fetchHistory(parsedUser.email);
+    })();
   }, [fetchHistory]);
+
+  useEffect(() => {
+    const uid = user?.id;
+    if (!uid) {
+      return;
+    }
+    const userRef = doc(db, 'users', uid);
+    const unsubscribe = onSnapshot(
+      userRef,
+      (snap) => {
+      if (!snap.exists()) return;
+      const data = snap.data();
+      const tokens = typeof data.tokens === 'number' ? data.tokens : 0;
+
+      setUser((prev) => {
+        if (!prev || prev.id !== uid) return prev;
+        return {
+          ...prev,
+          name: typeof data.name === 'string' ? data.name : prev.name,
+          phone: typeof data.phone === 'string' ? data.phone : prev.phone,
+          role: (data.role as User['role']) ?? prev.role,
+          tokens,
+        };
+      });
+
+      try {
+        const raw = localStorage.getItem('user');
+        if (!raw) return;
+        const cur = JSON.parse(raw) as User;
+        if (cur.id !== uid) return;
+        localStorage.setItem(
+          'user',
+          JSON.stringify({
+            ...cur,
+            name: typeof data.name === 'string' ? data.name : cur.name,
+            phone: typeof data.phone === 'string' ? data.phone : cur.phone,
+            role: (data.role as User['role']) ?? cur.role,
+            tokens,
+          }),
+        );
+      } catch {
+        /* ignore */
+      }
+    },
+      (err) => console.error('[purchase-tokens] Firestore users snapshot:', err),
+    );
+
+    return () => unsubscribe();
+  }, [user?.id]);
 
   const totalPrice = useMemo(() => {
     const quantity = Number(purchaseQuantity) || 0;
@@ -313,16 +379,23 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
           </CardHeader>
           <CardContent className="space-y-6">
             {blockingRequest && (
-              <Alert>
-                <Info className="h-4 w-4" />
-                <AlertTitle>已有進行中的增值請求</AlertTitle>
-                <AlertDescription>
-                  {blockingRequest.status === 'requesting'
-                    ? '您有一筆「等待付款」的增值請求'
-                    : '您有一筆「等待批核」的增值請求'}
-                  （參考編號 {blockingRequest.id}）。請完成或等候處理後再提交新申請。逾時未付款的請求會在進入本頁時由系統自動取消。
-                </AlertDescription>
-              </Alert>
+              <div
+                role="alert"
+                className="flex gap-3 rounded-lg border border-orange-300/90 bg-orange-100 px-4 py-4 text-orange-950 shadow-sm dark:border-orange-700/60 dark:bg-orange-950/50 dark:text-orange-100"
+              >
+                <AlertCircle className="h-6 w-6 shrink-0 text-amber-700 dark:text-amber-400" aria-hidden />
+                <div className="space-y-1 text-sm leading-relaxed">
+                  <p className="text-base font-semibold text-amber-950 dark:text-amber-50">已有進行中的增值請求</p>
+                  <p className="text-amber-900 dark:text-amber-100/95">
+                    {blockingRequest.status === 'requesting'
+                      ? '您有一筆「等待付款」的增值請求'
+                      : '您有一筆「等待批核」的增值請求'}
+                    （參考編號{' '}
+                    <span className="font-mono font-bold tracking-tight">{blockingRequest.id}</span>
+                    ）。請完成或等候處理後再提交新申請。逾時未付款的請求會在進入本頁時由系統自動取消。
+                  </p>
+                </div>
+              </div>
             )}
             <div className="grid gap-2">
               <Label htmlFor="quantity">增值金額 (港幣)</Label>
@@ -372,7 +445,17 @@ export function PurchaseTokensClientPage({ settings, paymentInfo }: PurchaseToke
         <PurchaseHistory 
           requests={requests}
           isLoading={isLoadingHistory}
-          refreshHistory={() => user?.email ? fetchHistory(user.email) : undefined}
+          refreshHistory={() => {
+            if (!user?.email) return;
+            void (async () => {
+              const fresh = await getUserByEmail(user.email);
+              if (fresh) {
+                setUser(fresh);
+                localStorage.setItem('user', JSON.stringify(fresh));
+              }
+              await fetchHistory(user.email);
+            })();
+          }}
         />
       </div>
 

@@ -1,7 +1,7 @@
 
 'use server';
 
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, unstable_noStore as noStore } from 'next/cache';
 import { db } from '@/lib/firebase-admin';
 import type { TokenPurchaseRequest, UserNotification, Reservation } from '@/types';
 import { adjustUserTokens, getUserByEmail, type User as AppUser } from '../users/actions';
@@ -82,6 +82,7 @@ export async function expireStaleRequestingTokenOrdersForUser(
 
 // --- Get all requests for a specific user ---
 export async function getTokenPurchaseRequestsByUser(userEmail: string): Promise<ServerActionResponse> {
+    noStore();
      if (!db) return { success: false, error: '後端資料庫未連接。' };
     try {
         const snapshot = await db.collection(TOKEN_REQUESTS_COLLECTION)

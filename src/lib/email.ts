@@ -106,17 +106,26 @@ export async function sendQrCodeEmail(
 }
 
 // New function to send top-up confirmation email
+const TOP_UP_AMOUNT_DISCREPANCY_NOTICE =
+    '請注意：此記錄與要求金額有出入，我們以最後收到轉帳之金額作最後的充值額。';
+
 export async function sendTopUpConfirmationEmail(
     user: AppUser,
     topUpAmount: number,
     newBalance: number,
-    contactInfo: ContactInfo
+    contactInfo: ContactInfo,
+    options?: { hasDiscrepancy?: boolean },
 ): Promise<boolean> {
     
     if (!transporter) {
         console.error("Cannot send email: Email service is not configured or failed to initialize.");
         return false;
     }
+
+    const discrepancyBlock =
+        options?.hasDiscrepancy === true
+            ? `<p style="margin:16px 0;padding:12px 14px;background:#ffedd5;border-left:4px solid #ea580c;color:#9a3412;border-radius:4px;"><strong>${TOP_UP_AMOUNT_DISCREPANCY_NOTICE}</strong></p>`
+            : '';
 
     const mailOptions = {
         from: `"${EMAIL_FROM_NAME}" <${EMAIL_SERVER_USER}>`,
@@ -127,6 +136,7 @@ export async function sendTopUpConfirmationEmail(
                 <h2>帳戶增值成功！</h2>
                 <p>致 ${user.name}，</p>
                 <p>您的帳戶已成功增值。</p>
+                ${discrepancyBlock}
                 <hr>
                 <h3>增值詳情：</h3>
                 <ul>
