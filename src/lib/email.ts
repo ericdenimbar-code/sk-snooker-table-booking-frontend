@@ -166,6 +166,74 @@ export async function sendTopUpConfirmationEmail(
     }
 }
 
+export async function sendTemporaryAccessQrEmail(
+    recipientEmail: string,
+    qrSecret: string,
+    qrCodeDataUrl: string,
+    validFromIso: string,
+    validUntilIso: string,
+    contactInfo: ContactInfo,
+): Promise<boolean> {
+    if (!transporter) {
+        console.error('Cannot send email: Email service is not configured or failed to initialize.');
+        return false;
+    }
+
+    const qrCodeCid = `tempaccess_${qrSecret.slice(0, 16)}@sk-booking.com`;
+    const base64Data = qrCodeDataUrl.split(';base64,').pop();
+    if (!base64Data) {
+        console.error('Failed to extract Base64 data from temporary access QR Data URL');
+        return false;
+    }
+
+    const fromLabel = formatInTimeZone(new Date(validFromIso), 'Asia/Hong_Kong', 'yyyy-MM-dd HH:mm');
+    const untilLabel = formatInTimeZone(new Date(validUntilIso), 'Asia/Hong_Kong', 'yyyy-MM-dd HH:mm');
+
+    const mailOptions = {
+        from: `"${EMAIL_FROM_NAME}" <${EMAIL_SERVER_USER}>`,
+        to: recipientEmail,
+        subject: `您在 ${EMAIL_FROM_NAME} 的臨時進出 QR Code`,
+        html: `
+            <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+                <h2>臨時進出碼</h2>
+                <p>您好，</p>
+                <p>以下為您的臨時進出二維碼，請於指定時段內使用。</p>
+                <ul>
+                    <li><strong>有效開始（香港時間）:</strong> ${fromLabel}</li>
+                    <li><strong>有效結束（香港時間）:</strong> ${untilLabel}</li>
+                </ul>
+                <div style="text-align: center; margin: 20px 0;">
+                    <img src="cid:${qrCodeCid}" alt="Temporary access QR Code" style="width: 250px; height: 250px;" />
+                </div>
+                <p>如有任何問題，歡迎隨時與我們聯絡。</p>
+                <p>
+                    <strong>${EMAIL_FROM_NAME}</strong><br>
+                    電話: ${contactInfo.whatsapp}<br>
+                    電郵: ${contactInfo.email}<br>
+                    地址: ${contactInfo.address}
+                </p>
+            </div>
+        `,
+        attachments: [
+            {
+                filename: 'temporary-access-qrcode.png',
+                content: base64Data,
+                encoding: 'base64',
+                cid: qrCodeCid,
+            },
+        ],
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        console.log(`Temporary access email sent to ${recipientEmail}`);
+        return true;
+    } catch (error) {
+        console.error(`Failed to send temporary access email to ${recipientEmail}:`, error);
+        return false;
+    }
+}
+
 export async function sendProblemTransactionAlertEmails(
   recipients: string[],
   payerName: string,

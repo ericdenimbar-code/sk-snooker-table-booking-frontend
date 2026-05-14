@@ -2,7 +2,7 @@
 'use server';
 
 import { db } from '@/lib/firebase-admin';
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, unstable_noStore as noStore } from 'next/cache';
 
 // --- Data Types ---
 export type PricingTier = {
@@ -142,6 +142,7 @@ export async function initializeDefaultSettings(roomId: string): Promise<RoomSet
   }
   try {
     revalidatePath('/admin/settings');
+    revalidatePath('/admin', 'page');
     revalidatePath('/(main)', 'layout');
   } catch (e: unknown) {
     console.warn(`revalidatePath after room bootstrap (${roomId}) skipped:`, e);
@@ -152,6 +153,7 @@ export async function initializeDefaultSettings(roomId: string): Promise<RoomSet
 // --- Server Actions ---
 
 export async function getRoomSettings(roomId: string): Promise<RoomSettings | null> {
+  noStore();
   if (!db) return null;
   try {
     const docRef = db.collection('roomSettings').doc(roomId);
@@ -179,6 +181,7 @@ export async function updateRoomSettings(roomId: string, data: Partial<Omit<Room
   try {
     await db.collection('roomSettings').doc(roomId).set(data, { merge: true });
     revalidatePath('/admin/settings');
+    revalidatePath('/admin', 'page');
     revalidatePath('/(main)', 'layout');
     return { success: true };
   } catch (e: any) {
@@ -205,6 +208,7 @@ export async function updateHASettings(data: HASettings): Promise<{success: bool
     if (!db) return { success: false, error: '後端資料庫未連接。' };
     try {
         await db.collection('globalSettings').doc('ha_settings').set(data, { merge: true });
+        revalidatePath('/admin/status');
         return { success: true };
     } catch (e: any) {
         return { success: false, error: e.message };
@@ -238,6 +242,7 @@ export async function updatePaymentInfo(data: Partial<PaymentInfo>): Promise<{su
         }
         
         await docRef.set(updateData, { merge: true });
+        revalidatePath('/admin/settings');
         return { success: true };
     } catch(e: any) {
         return { success: false, error: e.message };

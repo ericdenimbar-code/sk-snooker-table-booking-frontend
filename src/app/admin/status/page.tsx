@@ -40,7 +40,7 @@ export default async function AdminStatusPage() {
     }
 
     // 須與 src/lib/google-calendar.ts 的 hasGoogleConfig 條件一致（含四個門禁日曆）
-    const googleEnvVars = [
+    const googleEnvVars: { name: string; present: boolean; preview: string; optional?: boolean }[] = [
         { name: 'GOOGLE_SERVICE_ACCOUNT_EMAIL', present: !!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL, preview: getVarPreview(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) },
         { name: 'GOOGLE_PRIVATE_KEY', present: !!process.env.GOOGLE_PRIVATE_KEY, preview: getVarPreview(process.env.GOOGLE_PRIVATE_KEY) },
         { name: 'GOOGLE_CALENDAR_ID_ROOM_1', present: !!process.env.GOOGLE_CALENDAR_ID_ROOM_1, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_ROOM_1) },
@@ -49,9 +49,10 @@ export default async function AdminStatusPage() {
         { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_1B', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_1B, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_1B) },
         { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A) },
         { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B) },
+        { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp), optional: true },
     ];
 
-    const allGoogleVarsPresent = googleEnvVars.every(v => v.present);
+    const allGoogleVarsPresent = googleEnvVars.filter((v) => !v.optional).every((v) => v.present);
     const systemHealthy = allGoogleVarsPresent && dbCanRead;
 
     const StatusIcon = ({isValid}: {isValid: boolean}) => 
@@ -101,7 +102,7 @@ export default async function AdminStatusPage() {
                 <CardHeader>
                     <CardTitle>Google Calendar 環境變數檢查</CardTitle>
                     <CardDescription>
-                        此處顯示伺服器環境變數是否已載入（本機對應 .env.local；正式環境對應託管後台／Secret 設定）。缺任一項時，後端將與 src/lib/google-calendar.ts 相同判定為未完整設定。
+                        此處顯示伺服器環境變數是否已載入（本機對應 .env.local；正式環境對應託管後台／Secret 設定）。「必要」項與 src/lib/google-calendar.ts 中預約／門禁日曆設定一致；臨時進出碼日曆為選用。
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -110,6 +111,9 @@ export default async function AdminStatusPage() {
                             <div key={v.name} className="flex items-center justify-between p-3 border rounded-lg">
                                 <div>
                                     <code className="font-mono text-sm">{v.name}</code>
+                                    {v.optional ? (
+                                        <p className="text-xs text-muted-foreground">選用：臨時進出碼 A/B 段同步</p>
+                                    ) : null}
                                     <p className="text-xs text-muted-foreground">{v.preview}</p>
                                 </div>
                                 <div className="flex items-center gap-2">

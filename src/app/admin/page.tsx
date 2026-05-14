@@ -1,5 +1,6 @@
 import { getRoomSettings } from './settings/actions';
 import { DashboardForm } from './dashboard-form';
+import { TemporaryAccessRequestLog } from './temporary-access-request-log';
 import { DashboardDiagnostics } from './dashboard-diagnostics';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Terminal } from 'lucide-react';
@@ -82,6 +83,7 @@ export default async function AdminDashboard() {
         您可以在此進行快捷設定。更詳細的網站設定請前往「價目及內容設定」。
       </p>
       <DashboardForm initialRoom1Settings={room1Settings} initialRoom2Settings={room2Settings} />
+      <TemporaryAccessRequestLog />
     </div>
   );
 }

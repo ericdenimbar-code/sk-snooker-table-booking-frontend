@@ -15,10 +15,18 @@ const CALENDAR_ID_ROOM_1 = process.env.GOOGLE_CALENDAR_ID_ROOM_1;
 const CALENDAR_ID_ROOM_2 = process.env.GOOGLE_CALENDAR_ID_ROOM_2;
 
 // Rotational door control calendars
+<<<<<<< Updated upstream
 const CALENDAR_ID_DOOR_CONTROL_1A = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_1A;
 const CALENDAR_ID_DOOR_CONTROL_1B = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_1B;
 const CALENDAR_ID_DOOR_CONTROL_2A = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A;
 const CALENDAR_ID_DOOR_CONTROL_2B = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B;
+=======
+const CALENDAR_ID_DOOR_CONTROL_1A = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_1A?.trim();
+const CALENDAR_ID_DOOR_CONTROL_1B = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_1B?.trim();
+const CALENDAR_ID_DOOR_CONTROL_2A = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A?.trim();
+const CALENDAR_ID_DOOR_CONTROL_2B = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B?.trim();
+const CALENDAR_ID_DOOR_CONTROL_TEMP = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp?.trim();
+>>>>>>> Stashed changes
 
 const hasGoogleConfig = SERVICE_ACCOUNT_EMAIL && PRIVATE_KEY && CALENDAR_ID_ROOM_1 && CALENDAR_ID_ROOM_2 && CALENDAR_ID_DOOR_CONTROL_1A && CALENDAR_ID_DOOR_CONTROL_1B && CALENDAR_ID_DOOR_CONTROL_2A && CALENDAR_ID_DOOR_CONTROL_2B;
 
@@ -236,6 +244,30 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
 }
 
 /**
+ * 臨時進出 A/B 段共用密鑰：寫入專用日曆（每 segment 一筆事件）。
+ */
+export async function syncTemporaryAccessSegmentToCalendar(params: {
+    segmentKey: string;
+    secret: string;
+    startIso: string;
+    endIso: string;
+}): Promise<boolean> {
+    if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY || !CALENDAR_ID_DOOR_CONTROL_TEMP) {
+        console.warn('Temporary access segment calendar is not configured (GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp).');
+        return false;
+    }
+    const eventId = params.segmentKey.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    const created = await createEvent(CALENDAR_ID_DOOR_CONTROL_TEMP, {
+        summary: params.secret,
+        description: `臨時進出時段 ${params.segmentKey}`,
+        start: params.startIso,
+        end: params.endIso,
+        eventId,
+    });
+    return !!created;
+}
+
+/**
  * Deletes a Google Calendar event from all relevant calendars.
  */
 export async function deleteGoogleCalendarEvent(reservation: Reservation | TemporaryAccess): Promise<boolean> {
@@ -256,6 +288,10 @@ export async function deleteGoogleCalendarEvent(reservation: Reservation | Tempo
     };
     
     if ('validFrom' in reservation) {
+        const temp = reservation as TemporaryAccess;
+        if (temp.segmentKey) {
+            return true;
+        }
         const allDoorCalendars = [CALENDAR_ID_DOOR_CONTROL_1A, CALENDAR_ID_DOOR_CONTROL_1B, CALENDAR_ID_DOOR_CONTROL_2A, CALENDAR_ID_DOOR_CONTROL_2B].filter(Boolean) as string[];
         for (const calId of allDoorCalendars) {
             await tryDelete(calId);

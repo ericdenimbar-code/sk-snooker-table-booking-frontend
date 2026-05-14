@@ -3,9 +3,11 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { format, setHours, setMinutes, isBefore, isSameDay } from 'date-fns';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
 import { DateSelector } from '@/components/custom/date-selector';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, QrCode as QrCodeIcon, Ban, AlertTriangle, Info } from 'lucide-react';
+import { Loader2, QrCode as QrCodeIcon, Ban, Info } from 'lucide-react';
 import { createTemporaryAccessCode, getActiveTemporaryAccessCode, cancelTemporaryAccessCode } from './actions';
 import Image from 'next/image';
 import qrcode from 'qrcode';
@@ -33,6 +35,7 @@ export function TemporaryAccessClientPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isAlertOpen, setIsAlertOpen] = useState(false);
+  const [visitorEmail, setVisitorEmail] = useState('');
 
   const isAdmin = useMemo(() => user?.role.toLowerCase() === 'admin', [user]);
 
@@ -56,7 +59,8 @@ export function TemporaryAccessClientPage() {
     const result = await getActiveTemporaryAccessCode(currentUser.id);
     if (result.success && result.activeCode) {
       setActiveCode(result.activeCode);
-      const url = await generateQrCodeDataUrl(result.activeCode.id);
+      const secret = result.activeCode.sharedSecret ?? result.activeCode.id;
+      const url = await generateQrCodeDataUrl(secret);
       setActiveQrCodeUrl(url);
     } else {
       setActiveCode(null);
@@ -101,7 +105,10 @@ export function TemporaryAccessClientPage() {
              setActiveCode(null);
              setActiveQrCodeUrl('');
           }
-          toast({ title: '臨時碼已過期', description: '您可以申請新的臨時進出碼了。' });
+          toast({
+            title: '此臨時碼已過有效時間',
+            description: '請先按下「取消此時段」，方可再次申請。',
+          });
         }, timeout);
         return () => clearTimeout(timerId);
       }
@@ -187,11 +194,18 @@ export function TemporaryAccessClientPage() {
             date: format(firstSlot.date, 'yyyy-MM-dd'),
             startTime: firstSlot.time,
             endTime: isAdmin ? getEndTime(lastSlot.time) : undefined,
+            recipientEmail: isAdmin && visitorEmail.trim() ? visitorEmail.trim() : undefined,
         });
 
         if (result.success && result.newCode) {
-            toast({ title: '臨時碼已生成' });
+            toast({
+              title: '臨時碼已生成',
+              description: isAdmin
+                ? 'QR Code 已透過電郵發送（若已填寫訪客電郵則發至訪客，否則發至您的帳戶電郵）。'
+                : 'QR Code 已透過電郵發送至您的信箱。',
+            });
             setSelectedSlots([]);
+            setVisitorEmail('');
             await fetchActiveCode(user);
         } else {
             throw new Error(result.error || '無法生成 QR Code。');
@@ -259,6 +273,11 @@ export function TemporaryAccessClientPage() {
             </div>
           ) : activeCode ? (
             <>
+              {Date.now() > new Date(activeCode.validUntil).getTime() && (
+                <p className="text-sm text-amber-700 dark:text-amber-500">
+                  此申請已超過有效時間，請先取消後再重新申請。
+                </p>
+              )}
               <div className="border p-4 rounded-md bg-muted/50 space-y-1">
                 <p className="font-semibold">{format(new Date(activeCode.validFrom), 'yyyy年MM月dd日')}</p>
                 <p className="text-2xl font-bold">
@@ -288,6 +307,22 @@ export function TemporaryAccessClientPage() {
       </Card>
       
       <div className={cn((activeCode && !isAdmin) && "hidden")}>
+        {isAdmin && (
+          <div className="mb-6 rounded-md border bg-muted/30 p-4 space-y-2">
+            <Label htmlFor="visitor-email">訪客收件電郵（選填）</Label>
+            <Input
+              id="visitor-email"
+              type="email"
+              placeholder="留空則發送至您的帳戶電郵"
+              value={visitorEmail}
+              onChange={(e) => setVisitorEmail(e.target.value)}
+              className="max-w-md"
+            />
+            <p className="text-xs text-muted-foreground">
+              管理員可無限次申請；QR Code 會以電郵發送。未填寫時預設寄至您的登入電郵。
+            </p>
+          </div>
+        )}
         <div>
           <h3 className="text-lg font-medium mb-2">1. 選擇日期</h3>
           <DateSelector
@@ -309,7 +344,9 @@ export function TemporaryAccessClientPage() {
           <div>
             <h3 className="text-lg font-medium mb-2 mt-6">2. 選擇時段</h3>
             <p className="text-sm text-muted-foreground mb-4">
-              {isAdmin ? '請點選開始及結束時段以選取一個範圍。' : `顯示 ${format(selectedDate, "yyyy年MM月dd日")} 的時段。`}
+              {isAdmin
+                ? '請點選開始及結束時段以選取一個範圍（香港時間）。管理員申請將取得該時段 A/B 全段共用之密鑰。'
+                : `顯示 ${format(selectedDate, 'yyyy年MM月dd日')} 的時段（香港時間）。同一 A 段（03:00–14:59）或 B 段（15:00–翌日 02:59）內，所有申請人共用同一 QR 密鑰；VVIP 每次有效 30 分鐘。`}
             </p>
             <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                 {timeSlots.map(time => renderSlotButton(time))}

@@ -140,7 +140,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
   const handleOpenCancelDialog = () => selectedEvent && setIsCancelDialogOpen(true);
 
   const handleShowQrCode = async (event: CombinedEvent) => {
-    const qrSecret = event.eventType === 'reservation' ? event.qrSecret : event.id;
+    const qrSecret = event.eventType === 'reservation' ? event.qrSecret : (event.sharedSecret ?? event.id);
     if (!qrSecret || (event.eventType === 'reservation' && qrSecret.startsWith('USED_'))) {
         toast({ variant: 'destructive', title: '無法顯示', description: '此記錄的 QR Code 不存在或已被使用。' });
         return;

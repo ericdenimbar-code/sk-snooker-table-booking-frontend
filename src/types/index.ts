@@ -24,12 +24,20 @@ export type Reservation = {
 };
 
 export type TemporaryAccess = {
-  id: string; // Same as qrSecret for simplicity
+  /** 申請紀錄 ID（Firestore 文件 ID） */
+  id: string;
   userId: string;
   userEmail: string;
   validFrom: string; // ISO String
   validUntil: string; // ISO String
   status: 'active' | 'expired' | 'cancelled';
+  /** A/B 段識別，例如 A-2026-05-14 */
+  segmentKey?: string;
+  /** 該時段內共用的 QR 密鑰（與 id 不同） */
+  sharedSecret?: string;
+  createdAt?: string;
+  /** 管理員代訪客申請時的收件人 */
+  recipientEmail?: string;
 };
 
 
