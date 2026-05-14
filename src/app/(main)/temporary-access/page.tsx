@@ -29,7 +29,7 @@ export default async function TemporaryAccessPage() {
                 <div>
                     <h1 className="text-lg font-semibold md:text-2xl">臨時進出碼</h1>
                     <p className="text-sm text-muted-foreground mt-1">
-                        作為我們的貴賓，為方便大家處理儲物櫃存取球杆等事宜，閣下於下表中自行申請入場碼，每人每次可申請半小時入場時間，先選擇日期時段再按確定，系統便會自動發给你入場二維碼。
+                        作為我們的貴賓，為方便大家處理儲物櫃存取球杆等事宜，閣下於下表中自行申請入場碼，每人每次可申請半小時入場時間，按確定後，系統便會自動發给你入場二維碼。
                     </p>
                 </div>
             </div>
@@ -37,7 +37,7 @@ export default async function TemporaryAccessPage() {
                 <CardHeader>
                     <CardTitle>選擇進出時段</CardTitle>
                     <CardDescription>
-                        以香港時間劃分 A 段（03:00–14:59）與 B 段（15:00–翌日 02:59）；同一時段內共用同一 QR 密鑰。VVIP 每次有效 30 分鐘，取消後方可再申請；管理員可無限次申請並以電郵轉發訪客。
+                      每次有效 30 分鐘，取消後方可再申請。
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
