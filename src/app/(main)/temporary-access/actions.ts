@@ -34,6 +34,8 @@ type CreateCodeData = {
     endTime?: string;
     /** 管理員代訪客接收 QR 的電郵；空則使用登入者電郵 */
     recipientEmail?: string;
+    /** 僅管理員：畫面上顯示的香港時間區間文案，寫入 Firestore */
+    displayRangeHkt?: string;
 };
 
 const TEMP_ACCESS_COLLECTION = 'temporaryAccess';
@@ -124,7 +126,7 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
     if (!db) return { success: false, error: '後端資料庫未連接。' };
     const store = db;
 
-    const { userId, userEmail, date, startTime, recipientEmail } = data;
+    const { userId, userEmail, date, startTime, recipientEmail, displayRangeHkt } = data;
 
     try {
         const userDoc = await store.collection('users').doc(userId).get();
@@ -220,12 +222,15 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
                 createdAt: createdAtIso,
                 requestedAt: createdAtIso,
             };
+            if (isAdmin && displayRangeHkt?.trim()) {
+                firestoreDoc.displayRangeHkt = displayRangeHkt.trim();
+            }
 
             tx.set(applicationRef, firestoreDoc);
             tx.set(applicationRequestsRef, firestoreDoc);
         });
 
-        if (segmentCreated) {
+        if (segmentCreated || isAdmin) {
             const ok = await syncTemporaryAccessSegmentToCalendar({
                 segmentKey: segment.segmentKey,
                 secret: sharedSecret,
@@ -250,7 +255,70 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
             sharedSecret,
             createdAt: createdAtIso,
             requestedAt: createdAtIso,
+            ...(isAdmin && displayRangeHkt?.trim() ? { displayRangeHkt: displayRangeHkt.trim() } : {}),
         };
+
+        if (!isAdmin) {
+            const settings = await getRoomSettings('1');
+            const contactInfo = settings?.contactInfo ?? {
+                name: '',
+                email: '',
+                whatsapp: '',
+                address: '',
+                additionalInfo: '',
+            };
+
+            const qrPayload = sharedSecret;
+            const qrCodeDataUrl = await qrcode.toDataURL(qrPayload, {
+                errorCorrectionLevel: 'H',
+                margin: 2,
+                scale: 8,
+            });
+
+            await sendTemporaryAccessQrEmail({
+                recipientEmail: resolvedRecipient,
+                qrSecret: qrPayload,
+                qrCodeDataUrl,
+                requestedAtIso: createdAtIso,
+                audience: isVvip ? 'vvip' : 'other',
+                contactInfo,
+            });
+        }
+
+        revalidatePath('/admin/bookings', 'page');
+        revalidatePath('/admin', 'page');
+        revalidatePath('/temporary-access', 'page');
+
+        return { success: true, newCode };
+    } catch (e: unknown) {
+        console.error('Error creating temporary access code:', e);
+        const msg = e instanceof Error ? e.message : '發生未知錯誤。';
+        return { success: false, error: msg };
+    }
+}
+
+export async function sendAdminTemporaryAccessQrEmail(params: {
+    userId: string;
+    userEmail: string;
+    recipientEmail?: string;
+    qrSecret: string;
+    requestedAtIso: string;
+}): Promise<{ success: boolean; error?: string }> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
+
+    try {
+        const userDoc = await db.collection('users').doc(params.userId).get();
+        const role = (userDoc.data()?.role as string | undefined)?.toLowerCase();
+        if (!userDoc.exists || role !== 'admin') {
+            return { success: false, error: '權限不足。' };
+        }
+
+        const profileEmail = typeof userDoc.data()?.email === 'string' ? userDoc.data()!.email!.trim() : '';
+        const session = (params.userEmail || '').trim();
+        const to = (params.recipientEmail || '').trim() || profileEmail || session;
+        if (!to) {
+            return { success: false, error: '無法取得收件電郵。' };
+        }
 
         const settings = await getRoomSettings('1');
         const contactInfo = settings?.contactInfo ?? {
@@ -261,30 +329,24 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
             additionalInfo: '',
         };
 
-        const qrPayload = sharedSecret;
-        const qrCodeDataUrl = await qrcode.toDataURL(qrPayload, {
+        const qrCodeDataUrl = await qrcode.toDataURL(params.qrSecret, {
             errorCorrectionLevel: 'H',
             margin: 2,
             scale: 8,
         });
 
         await sendTemporaryAccessQrEmail({
-            recipientEmail: resolvedRecipient,
-            qrSecret: qrPayload,
+            recipientEmail: to,
+            qrSecret: params.qrSecret,
             qrCodeDataUrl,
-            requestedAtIso: createdAtIso,
-            audience: isAdmin ? 'admin' : isVvip ? 'vvip' : 'other',
+            requestedAtIso: params.requestedAtIso,
+            audience: 'admin',
             contactInfo,
         });
 
-        revalidatePath('/admin/bookings', 'page');
-        revalidatePath('/admin', 'page');
-        revalidatePath('/temporary-access', 'page');
-
-        return { success: true, newCode };
+        return { success: true };
     } catch (e: unknown) {
-        console.error('Error creating temporary access code:', e);
-        const msg = e instanceof Error ? e.message : '發生未知錯誤。';
+        const msg = e instanceof Error ? e.message : String(e);
         return { success: false, error: msg };
     }
 }

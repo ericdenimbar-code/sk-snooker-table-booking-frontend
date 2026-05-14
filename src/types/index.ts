@@ -40,6 +40,8 @@ export type TemporaryAccess = {
   requestedAt?: string;
   /** 收件電郵（與發送對象一致，永遠為字串） */
   recipientEmail?: string;
+  /** 僅管理員：畫面顯示用香港時間區間文案 */
+  displayRangeHkt?: string;
 };
 
 
