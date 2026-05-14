@@ -38,6 +38,26 @@ export function TemporaryAccessClientPage() {
   const [visitorEmail, setVisitorEmail] = useState('');
 
   const isAdmin = useMemo(() => user?.role.toLowerCase() === 'admin', [user]);
+  const isVvip = useMemo(() => user?.role.toLowerCase() === 'vvip', [user]);
+
+  const [nowTs, setNowTs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!activeCode || !isVvip) return;
+    const id = window.setInterval(() => setNowTs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [activeCode, isVvip]);
+
+  const vvipSecondsLeft = useMemo(() => {
+    if (!activeCode || !isVvip) return null;
+    return Math.max(0, Math.floor((new Date(activeCode.validUntil).getTime() - nowTs) / 1000));
+  }, [activeCode, isVvip, nowTs]);
+
+  const formatCountdown = (totalSec: number) => {
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
 
   const generateQrCodeDataUrl = useCallback(async (secret: string) => {
     if (!secret) return '';
@@ -92,6 +112,7 @@ export function TemporaryAccessClientPage() {
   }, [fetchActiveCode]);
 
   useEffect(() => {
+    if (isVvip) return;
     if (activeCode) {
       const validUntil = new Date(activeCode.validUntil).getTime();
       const now = Date.now();
@@ -113,7 +134,7 @@ export function TemporaryAccessClientPage() {
         return () => clearTimeout(timerId);
       }
     }
-  }, [activeCode, toast, user, fetchActiveCode]);
+  }, [activeCode, toast, user, fetchActiveCode, isVvip]);
 
 
   const timeSlots = useMemo(() =>
@@ -171,6 +192,32 @@ export function TemporaryAccessClientPage() {
     });
   }, [selectedSlots]);
 
+  const handleVvipApply = async () => {
+    if (!user || !isVvip) return;
+    setIsSubmitting(true);
+    try {
+      const result = await createTemporaryAccessCode({
+        userId: user.id,
+        userEmail: user.email,
+      });
+      if (result.success && result.newCode) {
+        toast({
+          title: '臨時碼已生成',
+          description: 'QR Code 已透過電郵發送至您的信箱。',
+        });
+        setNowTs(Date.now());
+        await fetchActiveCode(user);
+      } else {
+        throw new Error(result.error || '無法生成 QR Code。');
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : '發生錯誤';
+      toast({ variant: 'destructive', title: '生成失敗', description: message });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleGenerateQr = async () => {
     if (sortedSlots.length === 0 || !user) {
         toast({ variant: 'destructive', title: '錯誤', description: '請先選擇時段並確保您已登入。' });
@@ -226,6 +273,7 @@ export function TemporaryAccessClientPage() {
       toast({ title: '臨時碼已取消' });
       setActiveCode(null);
       setActiveQrCodeUrl('');
+      setNowTs(Date.now());
     } else {
       toast({ variant: 'destructive', title: '取消失敗', description: result.error });
     }
@@ -262,6 +310,53 @@ export function TemporaryAccessClientPage() {
 
   return (
     <div className="space-y-6">
+      {isVvip ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>臨時進出碼</CardTitle>
+            <CardDescription className="sr-only">VVIP 一鍵申請，有效 30 分鐘</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 text-center">
+            {isLoading ? (
+              <div className="flex items-center justify-center h-48">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              </div>
+            ) : activeCode ? (
+              <>
+                {vvipSecondsLeft !== null && vvipSecondsLeft > 0 && (
+                  <p className="text-lg font-semibold tabular-nums">
+                    剩餘有效時間：<span className="text-primary">{formatCountdown(vvipSecondsLeft)}</span>
+                  </p>
+                )}
+                {vvipSecondsLeft === 0 && (
+                  <p className="text-sm text-amber-700 dark:text-amber-500">
+                    有效時間已結束，請先按下「取消此時段」後再申請。
+                  </p>
+                )}
+                <div className="flex items-center justify-center p-4">
+                  {activeQrCodeUrl ? (
+                    <Image src={activeQrCodeUrl} alt="Temporary Access QR Code" width={200} height={200} />
+                  ) : (
+                    <Loader2 className="h-16 w-16 animate-spin text-primary" />
+                  )}
+                </div>
+                <Button onClick={handleCancelCode} disabled={isSubmitting} variant="destructive" className="w-full">
+                  {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Ban className="mr-2 h-4 w-4" />}
+                  取消此時段
+                </Button>
+              </>
+            ) : (
+              <div className="flex flex-col items-center gap-4 py-6">
+                <Button onClick={handleVvipApply} disabled={isSubmitting} size="lg" className="min-w-[200px]">
+                  {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <QrCodeIcon className="mr-2 h-4 w-4" />}
+                  申請臨時進出碼
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      ) : (
+        <>
       <Card>
         <CardHeader>
           <CardTitle>您目前生效的臨時進出碼</CardTitle>
@@ -346,7 +441,7 @@ export function TemporaryAccessClientPage() {
             <p className="text-sm text-muted-foreground mb-4">
               {isAdmin
                 ? '請點選開始及結束時段以選取一個範圍（香港時間）。管理員申請將取得該時段 A/B 全段共用之密鑰。'
-                : `顯示 ${format(selectedDate, 'yyyy年MM月dd日')} 的時段（香港時間）。同一 A 段（03:00–14:59）或 B 段（15:00–翌日 02:59）內，所有申請人共用同一 QR 密鑰；VVIP 每次有效 30 分鐘。`}
+                : `顯示 ${format(selectedDate, 'yyyy年MM月dd日')} 的時段（香港時間）；每次申請有效 30 分鐘。`}
             </p>
             <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                 {timeSlots.map(time => renderSlotButton(time))}
@@ -363,6 +458,8 @@ export function TemporaryAccessClientPage() {
           </div>
         )}
       </div>
+        </>
+      )}
 
       <AlertDialog open={isAlertOpen} onOpenChange={setIsAlertOpen}>
         <AlertDialogContent>

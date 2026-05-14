@@ -36,7 +36,9 @@ export type TemporaryAccess = {
   /** 該時段內共用的 QR 密鑰（與 id 不同） */
   sharedSecret?: string;
   createdAt?: string;
-  /** 管理員代訪客申請時的收件人 */
+  /** 按下申請時的伺服器時間（ISO） */
+  requestedAt?: string;
+  /** 收件電郵（與發送對象一致，永遠為字串） */
   recipientEmail?: string;
 };
 

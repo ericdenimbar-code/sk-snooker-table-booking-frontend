@@ -8,7 +8,12 @@ import { deleteGoogleCalendarEvent, syncTemporaryAccessSegmentToCalendar } from 
 import { revalidatePath } from 'next/cache';
 import { db } from '@/lib/firebase-admin';
 import type { TemporaryAccess } from '@/types';
-import { getHktBookingStartUtc, getTempAccessSegmentForBooking } from '@/lib/hkt-temp-segment';
+import {
+    getHktBookingStartUtc,
+    getTempAccessSegmentForBooking,
+    getTempAccessSegmentForInstant,
+    type TempAccessSegment,
+} from '@/lib/hkt-temp-segment';
 import { sendTemporaryAccessQrEmail } from '@/lib/email';
 import { getRoomSettings } from '@/app/admin/settings/actions';
 
@@ -23,14 +28,16 @@ type ServerActionResponse = {
 type CreateCodeData = {
     userId: string;
     userEmail: string;
-    date: string;
-    startTime: string;
+    /** 管理員／自選時段申請時必填；VVIP 一鍵申請時可省略 */
+    date?: string;
+    startTime?: string;
     endTime?: string;
-    /** 管理員代訪客接收 QR 的電郵 */
+    /** 管理員代訪客接收 QR 的電郵；空則使用登入者電郵 */
     recipientEmail?: string;
 };
 
 const TEMP_ACCESS_COLLECTION = 'temporaryAccess';
+const TEMP_ACCESS_REQUESTS_COLLECTION = 'temporaryAccessRequests';
 const SEGMENT_COLLECTION = 'temporaryAccessSegments';
 
 export async function listTemporaryAccessApplications(params: {
@@ -125,6 +132,15 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
         const isAdmin = userRole === 'admin';
         const isVvip = userRole === 'vvip';
 
+        const requestedAt = new Date();
+        const sessionEmail = (userEmail || '').trim();
+        const profileEmail = typeof userDoc.data()?.email === 'string' ? userDoc.data()!.email!.trim() : '';
+        const visitorEmail = (recipientEmail || '').trim();
+        const resolvedRecipient = visitorEmail || profileEmail || sessionEmail;
+        if (!resolvedRecipient) {
+            return { success: false, error: '無法取得發送電郵地址，請確認帳戶已設定電郵。' };
+        }
+
         if (isVvip) {
             const activeCodeCheck = await getActiveOrPendingVvipHold(userId);
             if (activeCodeCheck.blocked) {
@@ -136,21 +152,34 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
             }
         }
 
-        const segment = getTempAccessSegmentForBooking(date, startTime);
-        const bookingStart = getHktBookingStartUtc(date, startTime);
-
+        let segment: TempAccessSegment;
         let validFrom: Date;
         let validUntil: Date;
-        if (isAdmin) {
+
+        if (isVvip) {
+            segment = getTempAccessSegmentForInstant(requestedAt);
+            validFrom = requestedAt;
+            validUntil = addMinutes(requestedAt, 30);
+        } else if (isAdmin) {
+            if (!date || !startTime) {
+                return { success: false, error: '請選擇日期與時段。' };
+            }
+            segment = getTempAccessSegmentForBooking(date, startTime);
             validFrom = segment.validFrom;
             validUntil = segment.validUntil;
         } else {
+            if (!date || !startTime) {
+                return { success: false, error: '請選擇日期與時段。' };
+            }
+            segment = getTempAccessSegmentForBooking(date, startTime);
+            const bookingStart = getHktBookingStartUtc(date, startTime);
             validFrom = bookingStart;
             validUntil = addMinutes(bookingStart, 30);
         }
 
-        const applicationRef = store.collection(TEMP_ACCESS_COLLECTION).doc();
-        const applicationId = applicationRef.id;
+        const applicationId = store.collection(TEMP_ACCESS_COLLECTION).doc().id;
+        const applicationRef = store.collection(TEMP_ACCESS_COLLECTION).doc(applicationId);
+        const applicationRequestsRef = store.collection(TEMP_ACCESS_REQUESTS_COLLECTION).doc(applicationId);
 
         let sharedSecret = '';
         let segmentCreated = false;
@@ -169,7 +198,7 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
                     secret: sharedSecret,
                     validFrom: segment.validFrom.toISOString(),
                     validUntil: segment.validUntil.toISOString(),
-                    updatedAt: new Date().toISOString(),
+                    updatedAt: requestedAt.toISOString(),
                 });
             }
 
@@ -177,20 +206,23 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
                 throw new Error('無法取得時段共用密鑰。');
             }
 
-            const newCode: TemporaryAccess = {
+            const createdAtIso = requestedAt.toISOString();
+            const firestoreDoc: Record<string, string> = {
                 id: applicationId,
                 userId,
-                userEmail,
-                recipientEmail: recipientEmail?.trim() || undefined,
+                userEmail: sessionEmail || resolvedRecipient,
+                recipientEmail: resolvedRecipient,
                 validFrom: validFrom.toISOString(),
                 validUntil: validUntil.toISOString(),
                 status: 'active',
                 segmentKey: segment.segmentKey,
                 sharedSecret,
-                createdAt: new Date().toISOString(),
+                createdAt: createdAtIso,
+                requestedAt: createdAtIso,
             };
 
-            tx.set(applicationRef, newCode);
+            tx.set(applicationRef, firestoreDoc);
+            tx.set(applicationRequestsRef, firestoreDoc);
         });
 
         if (segmentCreated) {
@@ -205,17 +237,19 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
             }
         }
 
+        const createdAtIso = requestedAt.toISOString();
         const newCode: TemporaryAccess = {
             id: applicationId,
             userId,
-            userEmail,
-            recipientEmail: recipientEmail?.trim() || undefined,
+            userEmail: sessionEmail || resolvedRecipient,
+            recipientEmail: resolvedRecipient,
             validFrom: validFrom.toISOString(),
             validUntil: validUntil.toISOString(),
             status: 'active',
             segmentKey: segment.segmentKey,
             sharedSecret,
-            createdAt: new Date().toISOString(),
+            createdAt: createdAtIso,
+            requestedAt: createdAtIso,
         };
 
         const settings = await getRoomSettings('1');
@@ -234,8 +268,14 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
             scale: 8,
         });
 
-        const mailTo = (recipientEmail?.trim() || userEmail).trim();
-        await sendTemporaryAccessQrEmail(mailTo, qrPayload, qrCodeDataUrl, newCode.validFrom, newCode.validUntil, contactInfo);
+        await sendTemporaryAccessQrEmail({
+            recipientEmail: resolvedRecipient,
+            qrSecret: qrPayload,
+            qrCodeDataUrl,
+            requestedAtIso: createdAtIso,
+            audience: isAdmin ? 'admin' : isVvip ? 'vvip' : 'other',
+            contactInfo,
+        });
 
         revalidatePath('/admin/bookings', 'page');
         revalidatePath('/admin', 'page');
@@ -277,6 +317,12 @@ export async function cancelTemporaryAccessCode(codeId: string, userId: string):
         }
 
         await docRef.update({ status: 'cancelled' });
+
+        const reqRef = db.collection(TEMP_ACCESS_REQUESTS_COLLECTION).doc(codeId);
+        const reqSnap = await reqRef.get();
+        if (reqSnap.exists) {
+            await reqRef.update({ status: 'cancelled' });
+        }
 
         if (!codeData.segmentKey) {
             await deleteGoogleCalendarEvent(codeData);
