@@ -1,18 +1,21 @@
 
 'use server';
 
+import { createHash } from 'crypto';
 import { google } from 'googleapis';
 import { db } from '@/lib/firebase-admin';
 import type { Reservation, TemporaryAccess } from '@/types';
 import { parseISO, isWithinInterval, add, sub, format } from 'date-fns';
-import { formatInTimeZone } from 'date-fns-tz';
 
 const HKT_TIMEZONE = 'Asia/Hong_Kong';
 
-/** RFC3339 with +08:00 — never use `date` (all-day) or bare UTC `.toISOString()` with timeZone. */
-function toGoogleCalendarDateTimeHkt(isoOrDate: string | Date): string {
-    const d = typeof isoOrDate === 'string' ? parseISO(isoOrDate) : isoOrDate;
-    return formatInTimeZone(d, HKT_TIMEZONE, "yyyy-MM-dd'T'HH:mm:ssXXX");
+/** Google Calendar 自訂 event id 僅允許 a-v 與 0-9；Firestore ID 可能含 w-z 導致 insert 失敗 */
+function toGoogleCalendarEventId(raw: string): string {
+    return createHash('sha256').update(raw).digest('hex').slice(0, 32);
+}
+
+function parseEventInstant(isoOrDate: string | Date): Date {
+    return typeof isoOrDate === 'string' ? parseISO(isoOrDate) : isoOrDate;
 }
 
 // 環境變數檢查
@@ -55,6 +58,7 @@ type EventDetails = {
     start: string; // ISO 8601 格式
     end: string;   // ISO 8601 格式
     eventId: string;
+    doorAccessRequestId?: string;
 }
 
 /**
@@ -116,32 +120,82 @@ function getCalendarIdBySlot(id: RoomId | Slot): string | undefined {
 
 /**
  * Creates a Google Calendar event in the specified calendar.
+ * Uses dateTime + timeZone (never `date` all-day).
  */
 async function createEvent(calendarId: string, details: EventDetails): Promise<{ eventId: string; eventLink: string; } | null> {
+    const startTime = parseEventInstant(details.start);
+    const endTime = parseEventInstant(details.end);
+    const startDateTime = startTime.toISOString();
+    const endDateTime = endTime.toISOString();
+    const googleEventId = toGoogleCalendarEventId(details.eventId);
+    const doorAccessRequestId = details.doorAccessRequestId ?? details.eventId;
+
+    console.log('[Google Calendar] events.insert planned:', {
+        calendarId,
+        door_access_request_id: doorAccessRequestId,
+        googleEventId,
+        startDateTime,
+        endDateTime,
+        timeZone: HKT_TIMEZONE,
+        summaryPreview: details.summary.slice(0, 12),
+    });
+
+    if (endTime <= startTime) {
+        console.error('[Google Calendar] invalid range: end must be after start', {
+            startDateTime,
+            endDateTime,
+        });
+        return null;
+    }
+
+    const requestBody = {
+        summary: details.summary,
+        description: details.description,
+        start: { dateTime: startDateTime, timeZone: HKT_TIMEZONE },
+        end: { dateTime: endDateTime, timeZone: HKT_TIMEZONE },
+        id: googleEventId,
+        extendedProperties: {
+            private: {
+                door_access_request_id: doorAccessRequestId,
+            },
+        },
+    };
+
     try {
         const response = await calendar.events.insert({
-            calendarId: calendarId,
-            requestBody: {
-                summary: details.summary,
-                description: details.description,
-                start: { dateTime: toGoogleCalendarDateTimeHkt(details.start), timeZone: HKT_TIMEZONE },
-                end: { dateTime: toGoogleCalendarDateTimeHkt(details.end), timeZone: HKT_TIMEZONE },
-                id: details.eventId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase(), 
-            },
+            calendarId,
+            requestBody,
         });
 
         if (response.data) {
-            console.log(`✅ Successfully created event '${response.data.id}' in calendar '${calendarId}'.`);
-            return { eventId: response.data.id!, eventLink: response.data.htmlLink! };
+            console.log(`✅ Google Calendar event created: id=${response.data.id} calendar=${calendarId}`);
+            return { eventId: response.data.id!, eventLink: response.data.htmlLink ?? '' };
         }
+        console.error('[Google Calendar] insert returned empty response.data', { calendarId, googleEventId });
         return null;
+    } catch (error: unknown) {
+        const err = error as {
+            code?: number;
+            message?: string;
+            response?: { data?: unknown };
+            errors?: unknown;
+        };
+        const apiError = err.response?.data ?? err.errors ?? err.message ?? String(error);
 
-    } catch (error: any) {
-        if (error.code === 409) {
-            console.warn(`Event '${details.eventId}' already exists in calendar '${calendarId}'.`);
-            return { eventId: details.eventId, eventLink: '' };
+        if (err.code === 409) {
+            console.warn(`[Google Calendar] event already exists (409): googleEventId=${googleEventId}`, apiError);
+            return { eventId: googleEventId, eventLink: '' };
         }
-        console.error(`❌ Error creating event in calendar '${calendarId}':`, error);
+
+        console.error(`❌ Google Calendar events.insert failed:`, {
+            calendarId,
+            googleEventId,
+            door_access_request_id: doorAccessRequestId,
+            startDateTime,
+            endDateTime,
+            apiError,
+            message: err.message,
+        });
         return null;
     }
 }
@@ -255,17 +309,36 @@ export async function syncTemporaryAccessApplicationToCalendar(params: {
     endIso: string;
     description?: string;
 }): Promise<boolean> {
-    if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY || !CALENDAR_ID_DOOR_CONTROL_TEMP) {
-        console.warn('Temporary access application calendar is not configured.');
+    if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY) {
+        console.error('[Google Calendar] missing GOOGLE_SERVICE_ACCOUNT_EMAIL or GOOGLE_PRIVATE_KEY');
         return false;
     }
+    if (!CALENDAR_ID_DOOR_CONTROL_TEMP) {
+        console.error('[Google Calendar] missing GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp');
+        return false;
+    }
+
+    console.log('[Google Calendar] syncTemporaryAccessApplicationToCalendar:', {
+        applicationId: params.applicationId,
+        startIso: params.startIso,
+        endIso: params.endIso,
+        calendarId: CALENDAR_ID_DOOR_CONTROL_TEMP,
+    });
+
     const created = await createEvent(CALENDAR_ID_DOOR_CONTROL_TEMP, {
         summary: params.secret,
         description: params.description ?? `臨時進出 ${params.applicationId}`,
         start: params.startIso,
         end: params.endIso,
         eventId: params.applicationId,
+        doorAccessRequestId: params.applicationId,
     });
+
+    if (!created) {
+        console.error('[Google Calendar] syncTemporaryAccessApplicationToCalendar failed', {
+            applicationId: params.applicationId,
+        });
+    }
     return !!created;
 }
 

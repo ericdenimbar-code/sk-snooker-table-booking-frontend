@@ -309,22 +309,28 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
         // 每日密鑰僅存 Firestore；Google Calendar 只寫入單筆申請的精確時段（Admin / VVIP）
 
         if (isVvip && calendarUntil) {
-            // 日曆：申請當下起算，結束 = 申請 + 30 分鐘使用 + 3 分鐘緩衝（門禁同步）
-            await syncTemporaryAccessApplicationToCalendar({
+            // 日曆：申請當下立即寫入；結束 = 申請 + 33 分鐘（3 分鐘緩衝 + 30 分鐘使用）
+            const calOk = await syncTemporaryAccessApplicationToCalendar({
                 applicationId,
                 secret: sharedSecret,
                 startIso: requestedAt.toISOString(),
                 endIso: calendarUntil.toISOString(),
                 description: `VVIP 臨時進出 ${applicationId}`,
             });
+            if (!calOk) {
+                console.error(`[temporary-access] VVIP calendar sync failed for ${applicationId}`);
+            }
         } else if (isAdmin) {
-            await syncTemporaryAccessApplicationToCalendar({
+            const calOk = await syncTemporaryAccessApplicationToCalendar({
                 applicationId,
                 secret: sharedSecret,
                 startIso: validFrom.toISOString(),
                 endIso: validUntil.toISOString(),
                 description: `Admin 臨時進出 ${applicationId}`,
             });
+            if (!calOk) {
+                console.error(`[temporary-access] Admin calendar sync failed for ${applicationId}`);
+            }
         }
 
         const createdAtIso = requestedAt.toISOString();
