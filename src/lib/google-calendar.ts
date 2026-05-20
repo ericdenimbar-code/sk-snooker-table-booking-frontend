@@ -5,6 +5,15 @@ import { google } from 'googleapis';
 import { db } from '@/lib/firebase-admin';
 import type { Reservation, TemporaryAccess } from '@/types';
 import { parseISO, isWithinInterval, add, sub, format } from 'date-fns';
+import { formatInTimeZone } from 'date-fns-tz';
+
+const HKT_TIMEZONE = 'Asia/Hong_Kong';
+
+/** RFC3339 with +08:00 — never use `date` (all-day) or bare UTC `.toISOString()` with timeZone. */
+function toGoogleCalendarDateTimeHkt(isoOrDate: string | Date): string {
+    const d = typeof isoOrDate === 'string' ? parseISO(isoOrDate) : isoOrDate;
+    return formatInTimeZone(d, HKT_TIMEZONE, "yyyy-MM-dd'T'HH:mm:ssXXX");
+}
 
 // 環境變數檢查
 const SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
@@ -115,8 +124,8 @@ async function createEvent(calendarId: string, details: EventDetails): Promise<{
             requestBody: {
                 summary: details.summary,
                 description: details.description,
-                start: { dateTime: details.start, timeZone: 'Asia/Hong_Kong' },
-                end: { dateTime: details.end, timeZone: 'Asia/Hong_Kong' },
+                start: { dateTime: toGoogleCalendarDateTimeHkt(details.start), timeZone: HKT_TIMEZONE },
+                end: { dateTime: toGoogleCalendarDateTimeHkt(details.end), timeZone: HKT_TIMEZONE },
                 id: details.eventId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase(), 
             },
         });
@@ -306,6 +315,7 @@ export async function deleteGoogleCalendarEvent(reservation: Reservation | Tempo
     
     if ('validFrom' in reservation) {
         const temp = reservation as TemporaryAccess;
+        // 臨時進出（含 Admin / VVIP）不刪除 GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp 上的事件
         if (temp.segmentKey) {
             return true;
         }

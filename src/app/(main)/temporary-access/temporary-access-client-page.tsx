@@ -112,7 +112,9 @@ export function TemporaryAccessClientPage() {
     : activeCode
       ? new Date(activeCode.requestedAt ?? activeCode.validFrom).getTime() + 3 * 60 * 1000
       : 0;
-  const vvipValidUntilMs = activeCode ? new Date(activeCode.validUntil).getTime() : 0;
+  const vvipValidUntilMs = activeCode
+    ? new Date(activeCode.calendarUntil ?? activeCode.validUntil).getTime()
+    : 0;
 
   const vvipPhase = useMemo((): 'idle' | 'waiting' | 'active' | 'expired' => {
     if (!activeCode || !isVvip) return 'idle';

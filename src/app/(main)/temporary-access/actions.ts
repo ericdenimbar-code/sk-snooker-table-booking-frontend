@@ -322,11 +322,11 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
         }
 
         if (isVvip && calendarUntil) {
-            const calStart = effectiveFrom ?? addMinutes(requestedAt, VVIP_BUFFER_MINUTES);
+            // 日曆：申請當下起算，結束 = 申請 + 30 分鐘使用 + 3 分鐘緩衝（門禁同步）
             await syncTemporaryAccessApplicationToCalendar({
                 applicationId,
                 secret: sharedSecret,
-                startIso: calStart.toISOString(),
+                startIso: requestedAt.toISOString(),
                 endIso: calendarUntil.toISOString(),
                 description: `VVIP 臨時進出 ${applicationId}`,
             });
