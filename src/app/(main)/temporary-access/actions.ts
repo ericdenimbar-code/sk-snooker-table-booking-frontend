@@ -7,7 +7,6 @@ import { addMinutes } from 'date-fns';
 import {
     deleteGoogleCalendarEvent,
     syncTemporaryAccessApplicationToCalendar,
-    syncTemporaryAccessSegmentToCalendar,
 } from '@/lib/google-calendar';
 import { revalidatePath } from 'next/cache';
 import { db } from '@/lib/firebase-admin';
@@ -256,7 +255,6 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
         const applicationRequestsRef = store.collection(TEMP_ACCESS_REQUESTS_COLLECTION).doc(applicationId);
 
         let sharedSecret = '';
-        let segmentCreated = false;
 
         await store.runTransaction(async (tx) => {
             const segRef = store.collection(SEGMENT_COLLECTION).doc(dayKey);
@@ -266,7 +264,6 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
                 sharedSecret = d.secret ?? '';
             } else {
                 sharedSecret = `qs${randomBytes(12).toString('hex')}`;
-                segmentCreated = true;
                 tx.set(segRef, {
                     segmentKey: dayKey,
                     secret: sharedSecret,
@@ -309,17 +306,7 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
             tx.set(applicationRequestsRef, firestoreDoc);
         });
 
-        if (segmentCreated) {
-            const ok = await syncTemporaryAccessSegmentToCalendar({
-                segmentKey: dayKey,
-                secret: sharedSecret,
-                startIso: dailyPeriod.validFrom.toISOString(),
-                endIso: dailyPeriod.validUntil.toISOString(),
-            });
-            if (!ok) {
-                console.warn(`Daily key ${dayKey}: calendar sync skipped or failed.`);
-            }
-        }
+        // 每日密鑰僅存 Firestore；Google Calendar 只寫入單筆申請的精確時段（Admin / VVIP）
 
         if (isVvip && calendarUntil) {
             // 日曆：申請當下起算，結束 = 申請 + 30 分鐘使用 + 3 分鐘緩衝（門禁同步）

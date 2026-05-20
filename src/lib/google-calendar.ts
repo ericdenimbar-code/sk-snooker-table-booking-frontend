@@ -246,30 +246,6 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
 }
 
 /**
- * 每日共用密鑰：寫入專用日曆（每自然日一筆，03:00 HKT 重設）。
- */
-export async function syncTemporaryAccessSegmentToCalendar(params: {
-    segmentKey: string;
-    secret: string;
-    startIso: string;
-    endIso: string;
-}): Promise<boolean> {
-    if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY || !CALENDAR_ID_DOOR_CONTROL_TEMP) {
-        console.warn('Temporary access segment calendar is not configured (GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp).');
-        return false;
-    }
-    const eventId = params.segmentKey.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    const created = await createEvent(CALENDAR_ID_DOOR_CONTROL_TEMP, {
-        summary: params.secret,
-        description: `臨時進出每日密鑰 ${params.segmentKey}`,
-        start: params.startIso,
-        end: params.endIso,
-        eventId,
-    });
-    return !!created;
-}
-
-/**
  * 單筆申請（VVIP / Admin）：寫入專用日曆，eventId 為申請 ID，可重疊新增。
  */
 export async function syncTemporaryAccessApplicationToCalendar(params: {
