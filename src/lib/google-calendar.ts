@@ -237,7 +237,7 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
 }
 
 /**
- * 臨時進出 A/B 段共用密鑰：寫入專用日曆（每 segment 一筆事件）。
+ * 每日共用密鑰：寫入專用日曆（每自然日一筆，03:00 HKT 重設）。
  */
 export async function syncTemporaryAccessSegmentToCalendar(params: {
     segmentKey: string;
@@ -252,10 +252,34 @@ export async function syncTemporaryAccessSegmentToCalendar(params: {
     const eventId = params.segmentKey.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
     const created = await createEvent(CALENDAR_ID_DOOR_CONTROL_TEMP, {
         summary: params.secret,
-        description: `臨時進出時段 ${params.segmentKey}`,
+        description: `臨時進出每日密鑰 ${params.segmentKey}`,
         start: params.startIso,
         end: params.endIso,
         eventId,
+    });
+    return !!created;
+}
+
+/**
+ * 單筆申請（VVIP / Admin）：寫入專用日曆，eventId 為申請 ID，可重疊新增。
+ */
+export async function syncTemporaryAccessApplicationToCalendar(params: {
+    applicationId: string;
+    secret: string;
+    startIso: string;
+    endIso: string;
+    description?: string;
+}): Promise<boolean> {
+    if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY || !CALENDAR_ID_DOOR_CONTROL_TEMP) {
+        console.warn('Temporary access application calendar is not configured.');
+        return false;
+    }
+    const created = await createEvent(CALENDAR_ID_DOOR_CONTROL_TEMP, {
+        summary: params.secret,
+        description: params.description ?? `臨時進出 ${params.applicationId}`,
+        start: params.startIso,
+        end: params.endIso,
+        eventId: params.applicationId,
     });
     return !!created;
 }

@@ -12,8 +12,12 @@ import { Loader2, QrCode as QrCodeIcon, Ban, Info, Mail } from 'lucide-react';
 import {
   createTemporaryAccessCode,
   getActiveTemporaryAccessCode,
+  getAdminTemporaryAccessPreview,
   cancelTemporaryAccessCode,
+  dismissAdminTemporaryAccessPreview,
+  expireTemporaryAccessCode,
   sendAdminTemporaryAccessQrEmail,
+  sendVvipTemporaryAccessQrEmail,
 } from './actions';
 import Image from 'next/image';
 import qrcode from 'qrcode';
@@ -103,10 +107,29 @@ export function TemporaryAccessClientPage() {
     return () => window.clearInterval(id);
   }, [activeCode, isVvip]);
 
-  const vvipSecondsLeft = useMemo(() => {
-    if (!activeCode || !isVvip) return null;
-    return Math.max(0, Math.floor((new Date(activeCode.validUntil).getTime() - nowTs) / 1000));
-  }, [activeCode, isVvip, nowTs]);
+  const vvipEffectiveFromMs = activeCode?.effectiveFrom
+    ? new Date(activeCode.effectiveFrom).getTime()
+    : activeCode
+      ? new Date(activeCode.requestedAt ?? activeCode.validFrom).getTime() + 3 * 60 * 1000
+      : 0;
+  const vvipValidUntilMs = activeCode ? new Date(activeCode.validUntil).getTime() : 0;
+
+  const vvipPhase = useMemo((): 'idle' | 'waiting' | 'active' | 'expired' => {
+    if (!activeCode || !isVvip) return 'idle';
+    if (nowTs >= vvipValidUntilMs) return 'expired';
+    if (nowTs < vvipEffectiveFromMs) return 'waiting';
+    return 'active';
+  }, [activeCode, isVvip, nowTs, vvipEffectiveFromMs, vvipValidUntilMs]);
+
+  const vvipWaitingSecondsLeft = useMemo(() => {
+    if (vvipPhase !== 'waiting') return null;
+    return Math.max(0, Math.floor((vvipEffectiveFromMs - nowTs) / 1000));
+  }, [vvipPhase, vvipEffectiveFromMs, nowTs]);
+
+  const vvipActiveSecondsLeft = useMemo(() => {
+    if (vvipPhase !== 'active') return null;
+    return Math.max(0, Math.floor((vvipValidUntilMs - nowTs) / 1000));
+  }, [vvipPhase, vvipValidUntilMs, nowTs]);
 
   const formatCountdown = (totalSec: number) => {
     const m = Math.floor(totalSec / 60);
@@ -129,9 +152,45 @@ export function TemporaryAccessClientPage() {
     }
   }, [toast]);
 
+  const applyAdminCodeToPreview = useCallback(
+    async (code: TemporaryAccess) => {
+      const secret = code.sharedSecret ?? code.id;
+      const url = await generateQrCodeDataUrl(secret);
+      const rangeLabelHkt =
+        code.displayRangeHkt ??
+        `${formatInTimeZone(new Date(code.validFrom), HKT, 'HH:mm')} - ${formatInTimeZone(new Date(code.validUntil), HKT, 'HH:mm')}（香港時間）`;
+      setAdminPreview({
+        recordId: code.id,
+        secret,
+        rangeLabelHkt,
+        qrDataUrl: url,
+        requestedAtIso: code.requestedAt ?? code.createdAt ?? code.validFrom,
+        validFromIso: code.validFrom,
+        validUntilIso: code.validUntil,
+      });
+    },
+    [generateQrCodeDataUrl],
+  );
+
   const fetchActiveCode = useCallback(
     async (currentUser: AppUser) => {
       setIsLoading(true);
+      const role = currentUser.role.toLowerCase();
+
+      if (role === 'admin') {
+        const result = await getAdminTemporaryAccessPreview(currentUser.id);
+        if (result.success && result.activeCode) {
+          await applyAdminCodeToPreview(result.activeCode);
+        } else {
+          setAdminPreview(null);
+          if (!result.success && result.error) {
+            toast({ variant: 'destructive', title: '載入失敗', description: result.error });
+          }
+        }
+        setIsLoading(false);
+        return;
+      }
+
       const result = await getActiveTemporaryAccessCode(currentUser.id);
       if (result.success && result.activeCode) {
         setActiveCode(result.activeCode);
@@ -147,7 +206,7 @@ export function TemporaryAccessClientPage() {
       }
       setIsLoading(false);
     },
-    [generateQrCodeDataUrl, toast],
+    [applyAdminCodeToPreview, generateQrCodeDataUrl, toast],
   );
 
   useEffect(() => {
@@ -169,30 +228,21 @@ export function TemporaryAccessClientPage() {
     initialize();
   }, [fetchActiveCode]);
 
-  useEffect(() => {
-    if (isVvip) return;
-    if (activeCode) {
-      const validUntil = new Date(activeCode.validUntil).getTime();
-      const now = Date.now();
-      const timeout = validUntil - now;
+  const resetVvipState = useCallback(() => {
+    setActiveCode(null);
+    setActiveQrCodeUrl('');
+    setNowTs(Date.now());
+  }, []);
 
-      if (timeout > 0) {
-        const timerId = setTimeout(() => {
-          if (user) {
-            fetchActiveCode(user);
-          } else {
-            setActiveCode(null);
-            setActiveQrCodeUrl('');
-          }
-          toast({
-            title: '此臨時碼已過有效時間',
-            description: '請先按下「取消此時段」，方可再次申請。',
-          });
-        }, timeout);
-        return () => clearTimeout(timerId);
-      }
-    }
-  }, [activeCode, toast, user, fetchActiveCode, isVvip]);
+  useEffect(() => {
+    if (!isVvip || !activeCode || vvipPhase !== 'expired' || !user) return;
+
+    const run = async () => {
+      await expireTemporaryAccessCode(activeCode.id, user.id);
+      resetVvipState();
+    };
+    void run();
+  }, [isVvip, activeCode, vvipPhase, user, resetVvipState]);
 
   const timeSlots = useMemo(
     () =>
@@ -275,10 +325,13 @@ export function TemporaryAccessClientPage() {
       if (result.success && result.newCode) {
         toast({
           title: '臨時碼已生成',
-          description: 'QR Code 已透過電郵發送至您的信箱。',
+          description: '約 3 分鐘後生效，有效 30 分鐘。請使用「發送 Email」按鈕收取 QR Code。',
         });
+        setActiveCode(result.newCode);
+        const secret = result.newCode.sharedSecret ?? result.newCode.id;
+        const url = await generateQrCodeDataUrl(secret);
+        setActiveQrCodeUrl(url);
         setNowTs(Date.now());
-        await fetchActiveCode(user);
       } else {
         throw new Error(result.error || '無法生成 QR Code。');
       }
@@ -324,21 +377,11 @@ export function TemporaryAccessClientPage() {
         });
 
         if (result.success && result.newCode) {
-          const secret = result.newCode.sharedSecret ?? result.newCode.id;
-          const qrDataUrl = await generateQrCodeDataUrl(secret);
-          setAdminPreview({
-            recordId: result.newCode.id,
-            secret,
-            rangeLabelHkt,
-            qrDataUrl,
-            requestedAtIso: result.newCode.requestedAt ?? result.newCode.createdAt ?? new Date().toISOString(),
-            validFromIso: result.newCode.validFrom,
-            validUntilIso: result.newCode.validUntil,
-          });
+          await applyAdminCodeToPreview(result.newCode);
           setSelectedSlots([]);
           toast({
             title: '臨時碼已生成',
-            description: '已寫入 Firestore 並同步日曆；未自動發送電郵，請使用「按此以 Email 送出 QR Code」。',
+            description: '已寫入 Firestore 並同步日曆（精確時段）；未自動發信，請按「按此以 Email 送出 QR Code」。',
           });
         } else {
           throw new Error(result.error || '無法生成 QR Code。');
@@ -388,17 +431,43 @@ export function TemporaryAccessClientPage() {
     setIsSubmitting(false);
   };
 
-  const handleCancelAdminPreview = async () => {
+  const handleDismissAdminPreview = async () => {
     if (!adminPreview || !user) return;
     setIsSubmitting(true);
-    const result = await cancelTemporaryAccessCode(adminPreview.recordId, user.id);
+    const result = await dismissAdminTemporaryAccessPreview(adminPreview.recordId, user.id);
     if (result.success) {
-      toast({ title: '已取消此臨時碼' });
+      toast({ title: '已清除畫面顯示', description: '日曆紀錄已保留。' });
       setAdminPreview(null);
     } else {
-      toast({ variant: 'destructive', title: '取消失敗', description: result.error });
+      toast({ variant: 'destructive', title: '操作失敗', description: result.error });
     }
     setIsSubmitting(false);
+  };
+
+  const handleVvipSendEmail = async () => {
+    if (!user || !isVvip || !activeCode) {
+      toast({ variant: 'destructive', title: '請先產生 QR Code' });
+      return;
+    }
+    setIsSendingEmail(true);
+    try {
+      const res = await sendVvipTemporaryAccessQrEmail({
+        userId: user.id,
+        userEmail: user.email,
+        qrSecret: activeCode.sharedSecret ?? activeCode.id,
+        requestedAtIso: activeCode.requestedAt ?? activeCode.createdAt ?? activeCode.validFrom,
+      });
+      if (res.success) {
+        toast({ title: '電郵已送出', description: '已寄至您的帳戶電郵。' });
+      } else {
+        throw new Error(res.error || '發送失敗');
+      }
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : '發送失敗';
+      toast({ variant: 'destructive', title: '發送失敗', description: message });
+    } finally {
+      setIsSendingEmail(false);
+    }
   };
 
   const handleAdminSendEmail = async () => {
@@ -475,26 +544,46 @@ export function TemporaryAccessClientPage() {
               <div className="flex items-center justify-center h-48">
                 <Loader2 className="h-8 w-8 animate-spin text-primary" />
               </div>
-            ) : activeCode ? (
+            ) : activeCode && vvipPhase !== 'expired' ? (
               <>
-                {vvipSecondsLeft !== null && vvipSecondsLeft > 0 && (
+                {vvipPhase === 'waiting' && (
+                  <p className="text-sm text-muted-foreground">
+                    等待系統生效中，約 3 分鐘後生效
+                    {vvipWaitingSecondsLeft !== null && (
+                      <span className="block text-lg font-semibold tabular-nums text-primary mt-1">
+                        {formatCountdown(vvipWaitingSecondsLeft)}
+                      </span>
+                    )}
+                  </p>
+                )}
+                {vvipPhase === 'active' && vvipActiveSecondsLeft !== null && (
                   <p className="text-lg font-semibold tabular-nums">
-                    剩餘有效時間：<span className="text-primary">{formatCountdown(vvipSecondsLeft)}</span>
+                    剩餘進場時間：<span className="text-primary">{formatCountdown(vvipActiveSecondsLeft)}</span>
                   </p>
                 )}
-                {vvipSecondsLeft === 0 && (
-                  <p className="text-sm text-amber-700 dark:text-amber-500">
-                    有效時間已結束，請先按下「取消此時段」後再申請。
-                  </p>
-                )}
-                <div className="flex items-center justify-center p-4">
+                <div
+                  className={cn(
+                    'flex items-center justify-center p-4 mx-auto rounded-md',
+                    vvipPhase === 'waiting' && 'grayscale opacity-70',
+                  )}
+                >
                   {activeQrCodeUrl ? (
                     <Image src={activeQrCodeUrl} alt="Temporary Access QR Code" width={200} height={200} />
                   ) : (
                     <Loader2 className="h-16 w-16 animate-spin text-primary" />
                   )}
                 </div>
-                <Button onClick={handleCancelCode} disabled={isSubmitting} variant="destructive" className="w-full">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={isSendingEmail}
+                  onClick={() => void handleVvipSendEmail()}
+                  className="w-full"
+                >
+                  {isSendingEmail ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Mail className="mr-2 h-4 w-4" />}
+                  發送 Email
+                </Button>
+                <Button onClick={handleCancelCode} disabled={isSubmitting} variant="outline" className="w-full">
                   {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Ban className="mr-2 h-4 w-4" />}
                   取消此時段
                 </Button>
@@ -535,9 +624,9 @@ export function TemporaryAccessClientPage() {
                           <Loader2 className="h-16 w-16 animate-spin text-primary" />
                         )}
                       </div>
-                      <Button onClick={handleCancelAdminPreview} disabled={isSubmitting} variant="destructive" className="w-full">
+                      <Button onClick={handleDismissAdminPreview} disabled={isSubmitting} variant="outline" className="w-full">
                         {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Ban className="mr-2 h-4 w-4" />}
-                        取消此時段
+                        清除畫面顯示
                       </Button>
                     </>
                   ) : (
@@ -638,7 +727,7 @@ export function TemporaryAccessClientPage() {
                 <h3 className="text-lg font-medium mb-2 mt-6">2. 選擇時段</h3>
                 <p className="text-sm text-muted-foreground mb-4">
                   {isAdmin
-                    ? '請點選開始及結束「整點」時段以選取範圍（香港時間）。按下生成後會寫入資料庫與日曆，不會自動發信。'
+                    ? '請點選開始及結束「整點」時段（香港時間）。生成後寫入資料庫並同步日曆（與所選時段一致）；不會自動發信。'
                     : `顯示 ${format(selectedDate, 'yyyy年MM月dd日')} 的時段（香港時間）；每次申請有效 30 分鐘。`}
                 </p>
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">{activeSlotList.map((time) => renderSlotButton(time))}</div>

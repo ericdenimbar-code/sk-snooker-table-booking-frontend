@@ -4,15 +4,20 @@
 import { randomBytes } from 'crypto';
 import qrcode from 'qrcode';
 import { addMinutes } from 'date-fns';
-import { deleteGoogleCalendarEvent, syncTemporaryAccessSegmentToCalendar } from '@/lib/google-calendar';
+import {
+    deleteGoogleCalendarEvent,
+    syncTemporaryAccessApplicationToCalendar,
+    syncTemporaryAccessSegmentToCalendar,
+} from '@/lib/google-calendar';
 import { revalidatePath } from 'next/cache';
 import { db } from '@/lib/firebase-admin';
 import type { TemporaryAccess } from '@/types';
 import {
+    getAdminSlotPeriodHkt,
+    getDailyKeyPeriodForInstant,
     getHktBookingStartUtc,
-    getTempAccessSegmentForBooking,
-    getTempAccessSegmentForInstant,
-    type TempAccessSegment,
+    VVIP_BUFFER_MINUTES,
+    VVIP_CALENDAR_TOTAL_MINUTES,
 } from '@/lib/hkt-temp-segment';
 import { sendTemporaryAccessQrEmail } from '@/lib/email';
 import { getRoomSettings } from '@/app/admin/settings/actions';
@@ -28,19 +33,20 @@ type ServerActionResponse = {
 type CreateCodeData = {
     userId: string;
     userEmail: string;
-    /** 管理員／自選時段申請時必填；VVIP 一鍵申請時可省略 */
     date?: string;
     startTime?: string;
     endTime?: string;
-    /** 管理員代訪客接收 QR 的電郵；空則使用登入者電郵 */
     recipientEmail?: string;
-    /** 僅管理員：畫面上顯示的香港時間區間文案，寫入 Firestore */
     displayRangeHkt?: string;
 };
 
 const TEMP_ACCESS_COLLECTION = 'temporaryAccess';
 const TEMP_ACCESS_REQUESTS_COLLECTION = 'temporaryAccessRequests';
 const SEGMENT_COLLECTION = 'temporaryAccessSegments';
+
+function docToTemporaryAccess(id: string, data: FirebaseFirestore.DocumentData): TemporaryAccess {
+    return { ...(data as TemporaryAccess), id };
+}
 
 export async function listTemporaryAccessApplications(params: {
     adminUserId: string;
@@ -75,7 +81,7 @@ export async function listTemporaryAccessApplications(params: {
         }
 
         const snap = await q.get();
-        const docs = snap.docs.map((d) => d.data() as TemporaryAccess);
+        const docs = snap.docs.map((d) => docToTemporaryAccess(d.id, d.data()));
         const hasMore = docs.length > pageSize;
         const items = hasMore ? docs.slice(0, pageSize) : docs;
         const nextCursor = hasMore ? items[items.length - 1]?.id ?? null : null;
@@ -87,6 +93,22 @@ export async function listTemporaryAccessApplications(params: {
     }
 }
 
+async function expireCodeIfPast(code: TemporaryAccess): Promise<boolean> {
+    if (!db || code.status !== 'active') return false;
+    const endMs = new Date(code.validUntil).getTime();
+    if (endMs > Date.now()) return false;
+
+    const ref = db.collection(TEMP_ACCESS_COLLECTION).doc(code.id);
+    await ref.update({ status: 'expired' });
+    const reqRef = db.collection(TEMP_ACCESS_REQUESTS_COLLECTION).doc(code.id);
+    const reqSnap = await reqRef.get();
+    if (reqSnap.exists) {
+        await reqRef.update({ status: 'expired' });
+    }
+    return true;
+}
+
+/** VVIP：讀取有效申請；已過期則自動標記 expired */
 export async function getActiveTemporaryAccessCode(userId: string): Promise<ServerActionResponse> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
 
@@ -108,14 +130,54 @@ export async function getActiveTemporaryAccessCode(userId: string): Promise<Serv
         }
 
         const activeCodes = snapshot.docs
-            .map((doc) => ({ ...(doc.data() as TemporaryAccess), id: doc.id }))
+            .map((doc) => docToTemporaryAccess(doc.id, doc.data()))
             .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
 
         if (activeCodes.length === 0) {
             return { success: true, activeCode: null };
         }
 
-        return { success: true, activeCode: activeCodes[0] };
+        const latest = activeCodes[0];
+        const didExpire = await expireCodeIfPast(latest);
+        if (didExpire) {
+            return { success: true, activeCode: null };
+        }
+
+        return { success: true, activeCode: latest };
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, error: msg };
+    }
+}
+
+/** Admin：持久化預覽（未 dismiss、時段未過） */
+export async function getAdminTemporaryAccessPreview(userId: string): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
+
+    try {
+        const userDoc = await db.collection('users').doc(userId).get();
+        const role = userDoc.data()?.role?.toLowerCase() ?? '';
+        if (!userDoc.exists || role !== 'admin') {
+            return { success: false, error: '權限不足。' };
+        }
+
+        const snapshot = await db
+            .collection(TEMP_ACCESS_COLLECTION)
+            .where('userId', '==', userId)
+            .where('status', '==', 'active')
+            .get();
+
+        const now = Date.now();
+        const candidates = snapshot.docs
+            .map((doc) => docToTemporaryAccess(doc.id, doc.data()))
+            .filter((c) => c.adminUiDismissed !== true && new Date(c.validUntil).getTime() > now)
+            .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+
+        if (candidates.length === 0) {
+            return { success: true, activeCode: null };
+        }
+
+        return { success: true, activeCode: candidates[0] };
     } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         return { success: false, error: msg };
@@ -126,7 +188,7 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
     if (!db) return { success: false, error: '後端資料庫未連接。' };
     const store = db;
 
-    const { userId, userEmail, date, startTime, recipientEmail, displayRangeHkt } = data;
+    const { userId, userEmail, date, startTime, endTime, recipientEmail, displayRangeHkt } = data;
 
     try {
         const userDoc = await store.collection('users').doc(userId).get();
@@ -144,36 +206,46 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
         }
 
         if (isVvip) {
-            const activeCodeCheck = await getActiveOrPendingVvipHold(userId);
-            if (activeCodeCheck.blocked) {
+            const activeCodeCheck = await getActiveTemporaryAccessCode(userId);
+            if (activeCodeCheck.success && activeCodeCheck.activeCode) {
                 return {
                     success: false,
-                    error:
-                        '您已有一個生效中的臨時進出碼，或上一筆已過期但仍未取消。請先按下「取消此時段」後方可再次申請。',
+                    error: '您已有生效中的臨時進出碼，請等待本次時段結束後再申請。',
                 };
             }
         }
 
-        let segment: TempAccessSegment;
+        const dailyPeriod = isVvip
+            ? getDailyKeyPeriodForInstant(requestedAt)
+            : isAdmin && date && startTime
+              ? getDailyKeyPeriodForInstant(getHktBookingStartUtc(date, startTime))
+              : date && startTime
+                ? getDailyKeyPeriodForInstant(getHktBookingStartUtc(date, startTime))
+                : getDailyKeyPeriodForInstant(requestedAt);
+
+        const dayKey = dailyPeriod.dayKey;
+
         let validFrom: Date;
         let validUntil: Date;
+        let effectiveFrom: Date | undefined;
+        let calendarUntil: Date | undefined;
 
         if (isVvip) {
-            segment = getTempAccessSegmentForInstant(requestedAt);
+            effectiveFrom = addMinutes(requestedAt, VVIP_BUFFER_MINUTES);
             validFrom = requestedAt;
-            validUntil = addMinutes(requestedAt, 30);
+            validUntil = addMinutes(requestedAt, VVIP_CALENDAR_TOTAL_MINUTES);
+            calendarUntil = validUntil;
         } else if (isAdmin) {
-            if (!date || !startTime) {
+            if (!date || !startTime || !endTime) {
                 return { success: false, error: '請選擇日期與時段。' };
             }
-            segment = getTempAccessSegmentForBooking(date, startTime);
-            validFrom = segment.validFrom;
-            validUntil = segment.validUntil;
+            const slot = getAdminSlotPeriodHkt(date, startTime, endTime);
+            validFrom = slot.validFrom;
+            validUntil = slot.validUntil;
         } else {
             if (!date || !startTime) {
                 return { success: false, error: '請選擇日期與時段。' };
             }
-            segment = getTempAccessSegmentForBooking(date, startTime);
             const bookingStart = getHktBookingStartUtc(date, startTime);
             validFrom = bookingStart;
             validUntil = addMinutes(bookingStart, 30);
@@ -187,7 +259,7 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
         let segmentCreated = false;
 
         await store.runTransaction(async (tx) => {
-            const segRef = store.collection(SEGMENT_COLLECTION).doc(segment.segmentKey);
+            const segRef = store.collection(SEGMENT_COLLECTION).doc(dayKey);
             const segSnap = await tx.get(segRef);
             if (segSnap.exists) {
                 const d = segSnap.data() as { secret?: string };
@@ -196,20 +268,20 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
                 sharedSecret = `qs${randomBytes(12).toString('hex')}`;
                 segmentCreated = true;
                 tx.set(segRef, {
-                    segmentKey: segment.segmentKey,
+                    segmentKey: dayKey,
                     secret: sharedSecret,
-                    validFrom: segment.validFrom.toISOString(),
-                    validUntil: segment.validUntil.toISOString(),
+                    validFrom: dailyPeriod.validFrom.toISOString(),
+                    validUntil: dailyPeriod.validUntil.toISOString(),
                     updatedAt: requestedAt.toISOString(),
                 });
             }
 
             if (!sharedSecret) {
-                throw new Error('無法取得時段共用密鑰。');
+                throw new Error('無法取得每日共用密鑰。');
             }
 
             const createdAtIso = requestedAt.toISOString();
-            const firestoreDoc: Record<string, string> = {
+            const firestoreDoc: Record<string, string | boolean> = {
                 id: applicationId,
                 userId,
                 userEmail: sessionEmail || resolvedRecipient,
@@ -217,29 +289,55 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
                 validFrom: validFrom.toISOString(),
                 validUntil: validUntil.toISOString(),
                 status: 'active',
-                segmentKey: segment.segmentKey,
+                segmentKey: dayKey,
                 sharedSecret,
                 createdAt: createdAtIso,
                 requestedAt: createdAtIso,
+                adminUiDismissed: false,
             };
             if (isAdmin && displayRangeHkt?.trim()) {
                 firestoreDoc.displayRangeHkt = displayRangeHkt.trim();
+            }
+            if (isVvip && effectiveFrom) {
+                firestoreDoc.effectiveFrom = effectiveFrom.toISOString();
+            }
+            if (isVvip && calendarUntil) {
+                firestoreDoc.calendarUntil = calendarUntil.toISOString();
             }
 
             tx.set(applicationRef, firestoreDoc);
             tx.set(applicationRequestsRef, firestoreDoc);
         });
 
-        if (segmentCreated || isAdmin) {
+        if (segmentCreated) {
             const ok = await syncTemporaryAccessSegmentToCalendar({
-                segmentKey: segment.segmentKey,
+                segmentKey: dayKey,
                 secret: sharedSecret,
-                startIso: segment.validFrom.toISOString(),
-                endIso: segment.validUntil.toISOString(),
+                startIso: dailyPeriod.validFrom.toISOString(),
+                endIso: dailyPeriod.validUntil.toISOString(),
             });
             if (!ok) {
-                console.warn(`Segment ${segment.segmentKey}: calendar sync skipped or failed.`);
+                console.warn(`Daily key ${dayKey}: calendar sync skipped or failed.`);
             }
+        }
+
+        if (isVvip && calendarUntil) {
+            const calStart = effectiveFrom ?? addMinutes(requestedAt, VVIP_BUFFER_MINUTES);
+            await syncTemporaryAccessApplicationToCalendar({
+                applicationId,
+                secret: sharedSecret,
+                startIso: calStart.toISOString(),
+                endIso: calendarUntil.toISOString(),
+                description: `VVIP 臨時進出 ${applicationId}`,
+            });
+        } else if (isAdmin) {
+            await syncTemporaryAccessApplicationToCalendar({
+                applicationId,
+                secret: sharedSecret,
+                startIso: validFrom.toISOString(),
+                endIso: validUntil.toISOString(),
+                description: `Admin 臨時進出 ${applicationId}`,
+            });
         }
 
         const createdAtIso = requestedAt.toISOString();
@@ -251,14 +349,17 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
             validFrom: validFrom.toISOString(),
             validUntil: validUntil.toISOString(),
             status: 'active',
-            segmentKey: segment.segmentKey,
+            segmentKey: dayKey,
             sharedSecret,
             createdAt: createdAtIso,
             requestedAt: createdAtIso,
+            adminUiDismissed: false,
             ...(isAdmin && displayRangeHkt?.trim() ? { displayRangeHkt: displayRangeHkt.trim() } : {}),
+            ...(isVvip && effectiveFrom ? { effectiveFrom: effectiveFrom.toISOString() } : {}),
+            ...(isVvip && calendarUntil ? { calendarUntil: calendarUntil.toISOString() } : {}),
         };
 
-        if (!isAdmin) {
+        if (!isAdmin && !isVvip) {
             const settings = await getRoomSettings('1');
             const contactInfo = settings?.contactInfo ?? {
                 name: '',
@@ -267,20 +368,17 @@ export async function createTemporaryAccessCode(data: CreateCodeData): Promise<S
                 address: '',
                 additionalInfo: '',
             };
-
-            const qrPayload = sharedSecret;
-            const qrCodeDataUrl = await qrcode.toDataURL(qrPayload, {
+            const qrCodeDataUrl = await qrcode.toDataURL(sharedSecret, {
                 errorCorrectionLevel: 'H',
                 margin: 2,
                 scale: 8,
             });
-
             await sendTemporaryAccessQrEmail({
                 recipientEmail: resolvedRecipient,
-                qrSecret: qrPayload,
+                qrSecret: sharedSecret,
                 qrCodeDataUrl,
                 requestedAtIso: createdAtIso,
-                audience: isVvip ? 'vvip' : 'other',
+                audience: 'other',
                 contactInfo,
             });
         }
@@ -351,14 +449,129 @@ export async function sendAdminTemporaryAccessQrEmail(params: {
     }
 }
 
-/** VVIP：任一 active 紀錄（含已過期但未取消者）皆阻擋再次申請 */
-async function getActiveOrPendingVvipHold(userId: string): Promise<{ blocked: boolean }> {
-    if (!db) return { blocked: false };
-    const snapshot = await db.collection(TEMP_ACCESS_COLLECTION).where('userId', '==', userId).where('status', '==', 'active').get();
-    if (snapshot.empty) return { blocked: false };
-    return { blocked: true };
+export async function sendVvipTemporaryAccessQrEmail(params: {
+    userId: string;
+    userEmail: string;
+    qrSecret: string;
+    requestedAtIso: string;
+}): Promise<{ success: boolean; error?: string }> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
+
+    try {
+        const userDoc = await db.collection('users').doc(params.userId).get();
+        const role = (userDoc.data()?.role as string | undefined)?.toLowerCase();
+        if (!userDoc.exists || role !== 'vvip') {
+            return { success: false, error: '權限不足。' };
+        }
+
+        const profileEmail = typeof userDoc.data()?.email === 'string' ? userDoc.data()!.email!.trim() : '';
+        const session = (params.userEmail || '').trim();
+        const to = profileEmail || session;
+        if (!to) {
+            return { success: false, error: '無法取得收件電郵。' };
+        }
+
+        const settings = await getRoomSettings('1');
+        const contactInfo = settings?.contactInfo ?? {
+            name: '',
+            email: '',
+            whatsapp: '',
+            address: '',
+            additionalInfo: '',
+        };
+
+        const qrCodeDataUrl = await qrcode.toDataURL(params.qrSecret, {
+            errorCorrectionLevel: 'H',
+            margin: 2,
+            scale: 8,
+        });
+
+        await sendTemporaryAccessQrEmail({
+            recipientEmail: to,
+            qrSecret: params.qrSecret,
+            qrCodeDataUrl,
+            requestedAtIso: params.requestedAtIso,
+            audience: 'vvip',
+            contactInfo,
+        });
+
+        return { success: true };
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, error: msg };
+    }
 }
 
+/** VVIP 自動過期：標記 expired，不刪日曆 */
+export async function expireTemporaryAccessCode(codeId: string, userId: string): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
+
+    try {
+        const docRef = db.collection(TEMP_ACCESS_COLLECTION).doc(codeId);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) {
+            return { success: false, error: '找不到指定的臨時碼。' };
+        }
+
+        const codeData = docToTemporaryAccess(docSnap.id, docSnap.data()!);
+        if (codeData.userId !== userId) {
+            return { success: false, error: '權限不足。' };
+        }
+
+        await docRef.update({ status: 'expired' });
+        const reqRef = db.collection(TEMP_ACCESS_REQUESTS_COLLECTION).doc(codeId);
+        if ((await reqRef.get()).exists) {
+            await reqRef.update({ status: 'expired' });
+        }
+
+        revalidatePath('/temporary-access', 'page');
+        return { success: true };
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, error: msg };
+    }
+}
+
+/** Admin：僅隱藏前端，不刪除 Google Calendar */
+export async function dismissAdminTemporaryAccessPreview(
+    codeId: string,
+    userId: string,
+): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
+
+    try {
+        const userDoc = await db.collection('users').doc(userId).get();
+        const role = userDoc.data()?.role?.toLowerCase();
+        if (!userDoc.exists || role !== 'admin') {
+            return { success: false, error: '權限不足。' };
+        }
+
+        const docRef = db.collection(TEMP_ACCESS_COLLECTION).doc(codeId);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) {
+            return { success: false, error: '找不到指定的臨時碼。' };
+        }
+
+        const codeData = docToTemporaryAccess(docSnap.id, docSnap.data()!);
+        if (codeData.userId !== userId) {
+            return { success: false, error: '權限不足。' };
+        }
+
+        await docRef.update({ adminUiDismissed: true });
+        const reqRef = db.collection(TEMP_ACCESS_REQUESTS_COLLECTION).doc(codeId);
+        if ((await reqRef.get()).exists) {
+            await reqRef.update({ adminUiDismissed: true });
+        }
+
+        revalidatePath('/temporary-access', 'page');
+        return { success: true };
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, error: msg };
+    }
+}
+
+/** 非 Admin 使用者取消（VVIP 手動取消） */
 export async function cancelTemporaryAccessCode(codeId: string, userId: string): Promise<ServerActionResponse> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
 
@@ -370,19 +583,22 @@ export async function cancelTemporaryAccessCode(codeId: string, userId: string):
             return { success: false, error: '找不到指定的臨時碼。' };
         }
 
-        const codeData = { ...(docSnap.data() as TemporaryAccess), id: docSnap.id };
+        const codeData = docToTemporaryAccess(docSnap.id, docSnap.data()!);
         const userDoc = await db.collection('users').doc(userId).get();
-        const userRole = userDoc.data()?.role;
+        const userRole = userDoc.data()?.role?.toLowerCase();
 
-        if (codeData.userId !== userId && (userRole as string | undefined)?.toLowerCase() !== 'admin') {
+        if (userRole === 'admin') {
+            return dismissAdminTemporaryAccessPreview(codeId, userId);
+        }
+
+        if (codeData.userId !== userId) {
             return { success: false, error: '權限不足，無法取消此臨時碼。' };
         }
 
         await docRef.update({ status: 'cancelled' });
 
         const reqRef = db.collection(TEMP_ACCESS_REQUESTS_COLLECTION).doc(codeId);
-        const reqSnap = await reqRef.get();
-        if (reqSnap.exists) {
+        if ((await reqRef.get()).exists) {
             await reqRef.update({ status: 'cancelled' });
         }
 

@@ -31,8 +31,14 @@ export type TemporaryAccess = {
   validFrom: string; // ISO String
   validUntil: string; // ISO String
   status: 'active' | 'expired' | 'cancelled';
-  /** A/B 段識別，例如 A-2026-05-14 */
+  /** 每日密鑰識別，例如 D-2026-05-14（03:00 HKT 起算） */
   segmentKey?: string;
+  /** VVIP：緩衝結束後方可進場（ISO） */
+  effectiveFrom?: string;
+  /** VVIP：日曆同步結束（含緩衝，ISO） */
+  calendarUntil?: string;
+  /** 管理員：僅隱藏前端，不刪日曆 */
+  adminUiDismissed?: boolean;
   /** 該時段內共用的 QR 密鑰（與 id 不同） */
   sharedSecret?: string;
   createdAt?: string;
