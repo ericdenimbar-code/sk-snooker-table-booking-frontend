@@ -11,7 +11,7 @@ import {
 } from 'date-fns';
 import { formatInTimeZone } from 'date-fns-tz';
 import { zhTW } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Loader2, Ban, Phone, Hash, User, Building2, RefreshCw, QrCode as QrCodeIcon, KeyRound } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, Ban, Phone, Hash, User, Building2, RefreshCw, QrCode as QrCodeIcon } from 'lucide-react';
 import Image from 'next/image';
 import qrcode from 'qrcode';
 import { collection, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
@@ -22,6 +22,7 @@ import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescript
 import { useToast } from '@/hooks/use-toast';
 import type { Reservation, TemporaryAccess } from '@/types';
 import { cancelReservation, getAdminBookingsInitialData } from '@/app/admin/bookings/actions';
+import { getUserById } from '@/app/admin/users/actions';
 import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions';
 import { cn } from '@/lib/utils';
 import { db, auth } from '@/lib/firebase';
@@ -473,9 +474,38 @@ const EventButton = ({ event, currentDay, onClick, className }: { event: Combine
 };
 
 const EventDetailDialog = ({ event, open, onOpenChange, onCancel, onShowQr }: { event: CombinedEvent | null, open: boolean, onOpenChange: (open: boolean) => void, onCancel: () => void, onShowQr: (event: CombinedEvent) => void }) => {
+  const [tempAccessProfile, setTempAccessProfile] = useState<{ name: string; phone: string } | null>(null);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(false);
+
+  useEffect(() => {
+    if (!open || !event || event.eventType !== 'temp-access') {
+      setTempAccessProfile(null);
+      setIsLoadingProfile(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingProfile(true);
+    void getUserById(event.userId).then((user) => {
+      if (cancelled) return;
+      setTempAccessProfile(
+        user
+          ? { name: user.name, phone: user.phone?.trim() || '—' }
+          : null,
+      );
+      setIsLoadingProfile(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, event]);
+
   if (!event) return null;
 
   const isReservation = event.eventType === 'reservation';
+  const tempUserDisplayName = tempAccessProfile?.name ?? (isLoadingProfile ? '載入中…' : event.userEmail);
+  const tempUserPhone = tempAccessProfile?.phone ?? (isLoadingProfile ? '載入中…' : '—');
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -487,17 +517,15 @@ const EventDetailDialog = ({ event, open, onOpenChange, onCancel, onShowQr }: { 
         <div className="space-y-4 py-4">
             <div className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-3">
                 <User className="h-5 w-5 text-muted-foreground self-start mt-1"/>
-                <div><p className="text-sm text-muted-foreground">用戶</p><p className="font-semibold">{isReservation ? event.userName : event.userEmail}</p></div>
+                <div><p className="text-sm text-muted-foreground">用戶</p><p className="font-semibold">{isReservation ? event.userName : tempUserDisplayName}</p></div>
                 
                 {isReservation ? <>
                   <Building2 className="h-5 w-5 text-muted-foreground self-start mt-1"/>
                   <div><p className="text-sm text-muted-foreground">枱號</p><p className="font-semibold">{event.roomName.replace('房間', '枱號')}</p></div>
-                  <Phone className="h-5 w-5 text-muted-foreground self-start mt-1"/>
-                  <div><p className="text-sm text-muted-foreground">手機號碼</p><p className="font-semibold">{event.userPhone}</p></div>
-                </> : <>
-                  <KeyRound className="h-5 w-5 text-muted-foreground self-start mt-1"/>
-                  <div><p className="text-sm text-muted-foreground">類型</p><p className="font-semibold">臨時進出碼</p></div>
-                </>}
+                </> : null}
+
+                <Phone className="h-5 w-5 text-muted-foreground self-start mt-1"/>
+                <div><p className="text-sm text-muted-foreground">手機號碼</p><p className="font-semibold">{isReservation ? event.userPhone : tempUserPhone}</p></div>
 
                 <Hash className="h-5 w-5 text-muted-foreground self-start mt-1"/>
                 <div><p className="text-sm text-muted-foreground">參考編號</p><p className="font-semibold">{event.id}</p></div>

@@ -39,6 +39,25 @@ export async function getUserTopUpHistory(email: string): Promise<ServerActionRe
 }
 
 
+export async function getUserById(userId: string): Promise<AppUser | null> {
+    noStore();
+    if (!db || !userId) {
+        return null;
+    }
+
+    try {
+        const snap = await db.collection('users').doc(userId).get();
+        if (!snap.exists) {
+            return null;
+        }
+        return { id: snap.id, ...snap.data() } as AppUser;
+    } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        console.error(`Error fetching user by id ${userId}:`, message);
+        return null;
+    }
+}
+
 export async function getUserByEmail(email: string): Promise<AppUser | null> {
     noStore();
     if (!db) {
