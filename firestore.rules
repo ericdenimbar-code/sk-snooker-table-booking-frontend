@@ -32,27 +32,28 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // 分開 allow read，避免 OR 導致 Admin 的 collection 查詢（無 userId 過濾）遭拒
     match /reservations/{reservationId} {
-      allow read: if isAdmin()
-        || (isSignedIn() && resource.data.userEmail == request.auth.token.email);
+      allow read: if isAdmin();
+      allow read: if isSignedIn() && resource.data.userEmail == request.auth.token.email;
       allow write: if false;
     }
 
     match /temporaryAccess/{docId} {
-      allow read: if isAdmin()
-        || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow read: if isAdmin();
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
       allow write: if false;
     }
 
     match /temporaryAccessRequests/{docId} {
-      allow read: if isAdmin()
-        || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow read: if isAdmin();
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
       allow write: if false;
     }
 
     match /temporaryAccessSegments/{docId} {
-      allow read: if isAdmin()
-        || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow read: if isAdmin();
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
       allow write: if false;
     }
 
@@ -67,8 +68,8 @@ service cloud.firestore {
     }
 
     match /tokenRequests/{docId} {
-      allow read: if isAdmin()
-        || (isSignedIn() && resource.data.userEmail == request.auth.token.email);
+      allow read: if isAdmin();
+      allow read: if isSignedIn() && resource.data.userEmail == request.auth.token.email;
       allow write: if false;
     }
 

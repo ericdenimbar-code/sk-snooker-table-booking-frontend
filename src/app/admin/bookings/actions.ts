@@ -46,7 +46,7 @@ export async function getAdminBookingsInitialData(dayYmd?: string): Promise<Admi
         .where('date', 'in', [...window.queryDates])
         .limit(50)
         .get(),
-      db.collection('temporaryAccess').where('status', '==', 'active').limit(50).get(),
+      db.collection('temporaryAccess').limit(50).get(),
     ]);
 
     const reservations = resSnapshot.docs
@@ -59,6 +59,7 @@ export async function getAdminBookingsInitialData(dayYmd?: string): Promise<Admi
         const data = doc.data() as TemporaryAccess;
         return { ...data, id: data.id ?? doc.id };
       })
+      .filter((t) => t.status === 'active')
       .filter((t) => tempAccessInAdminWindow(t, window));
 
     return { success: true, reservations, accessCodes };

@@ -55,6 +55,9 @@ const timeToIndex = (time: string): number => {
     return hours * 2 + (minutes / 30);
 };
 
+/** 日曆格共 48 個半小時格（00:00–23:30） */
+const SLOTS_PER_DAY = 48;
+
 function getHktAnchorDate(): Date {
   const ymd = formatInTimeZone(new Date(), HKT, 'yyyy-MM-dd');
   const [y, mo, d] = ymd.split('-').map(Number);
@@ -176,7 +179,6 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
 
     const tempAccessQuery = query(
       collection(db, 'temporaryAccess'),
-      where('status', '==', 'active'),
       limit(50),
     );
 
@@ -220,6 +222,12 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
           );
           return;
         }
+        if (collectionName === 'temporaryAccess') {
+          console.warn(
+            '[admin/bookings] temporaryAccess permission-denied (logged only; check firestore.rules deploy)',
+          );
+          return;
+        }
       }
 
       if (permissionDeniedToastShownRef.current && error.code === 'permission-denied') {
@@ -258,7 +266,9 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
           const data = docSnap.data() as TemporaryAccess;
           return { ...data, id: data.id ?? docSnap.id };
         });
-        const filtered = rows.filter((t) => tempAccessInAdminWindow(t, window));
+        const filtered = rows
+          .filter((t) => t.status === 'active')
+          .filter((t) => tempAccessInAdminWindow(t, window));
         setTempAccesses(filtered);
       },
       (error) => handleSnapshotError('temporaryAccess', error, '臨時碼即時同步失敗'),
@@ -403,22 +413,25 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
 const EventButton = ({ event, currentDay, onClick, className }: { event: CombinedEvent, currentDay: Date, onClick: (e: CombinedEvent) => void, className?: string }) => {
     
     const isSpillOver = !isSameHktDay(event.start, currentDay);
-    const dayYmd = formatInTimeZone(currentDay, HKT, 'yyyy-MM-dd');
-    const [y, mo, d] = dayYmd.split('-').map(Number);
-    const dayStart = new Date(y, mo - 1, d);
 
-    const startTimeForCalc = isSpillOver ? dayStart : event.start;
-    let endTimeForCalc = event.end;
-    
-    if (event.isOvernight && isSameHktDay(event.start, currentDay)) {
-        endTimeForCalc = addDays(dayStart, 1);
-    } else if (!isSameHktDay(event.end, currentDay)) {
-        endTimeForCalc = addDays(dayStart, 1);
+    let startSlots: number;
+    let endSlots: number;
+
+    if (isSpillOver) {
+      startSlots = 0;
+      endSlots = timeToIndex(formatInTimeZone(event.end, HKT, 'HH:mm'));
+    } else if (event.isOvernight && isSameHktDay(event.start, currentDay)) {
+      // 今日開始、跨午夜結束（例如 23:00–00:00 須畫到日末 24:00，不可把 00:00 當 slot 0）
+      startSlots = timeToIndex(formatInTimeZone(event.start, HKT, 'HH:mm'));
+      endSlots = SLOTS_PER_DAY;
+    } else {
+      startSlots = timeToIndex(formatInTimeZone(event.start, HKT, 'HH:mm'));
+      endSlots = timeToIndex(formatInTimeZone(event.end, HKT, 'HH:mm'));
+      if (endSlots <= startSlots) {
+        endSlots = SLOTS_PER_DAY;
+      }
     }
-    
-    const startSlots = timeToIndex(format(startTimeForCalc, 'HH:mm'));
-    const endSlots = timeToIndex(format(endTimeForCalc, 'HH:mm'));
-    
+
     const durationInSlots = endSlots - startSlots;
 
     if (durationInSlots <= 0) return null;
