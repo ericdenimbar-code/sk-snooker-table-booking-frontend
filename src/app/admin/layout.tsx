@@ -56,16 +56,16 @@ function AdminNav({ onLinkClick }: { onLinkClick?: () => void }) {
         className={cn(linkClass, isActive('/admin/bookings') && activeLinkClass)}
         onClick={handleClick}
       >
-        <Home className="h-4 w-4" />
-        儀表板
-      </Link>
-      <Link
-        href="/admin/bookings"
-        className={cn(linkClass, isActive('/admin/bookings') && activeLinkClass)}
-        onClick={handleClick}
-      >
         <CalendarCheck className="h-4 w-4" />
         預訂管理
+      </Link>
+      <Link
+        href="/admin/dashboard"
+        className={cn(linkClass, isActive('/admin/dashboard') && activeLinkClass)}
+        onClick={handleClick}
+      >
+        <Home className="h-4 w-4" />
+        儀表板
       </Link>
       <Link
         href="/admin/users"
