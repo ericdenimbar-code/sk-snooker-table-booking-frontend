@@ -38,23 +38,29 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const { toast } = useToast();
-  const [siteName, setSiteName] = useState('Snooker Kingdom Booking');
+  const [branding, setBranding] = useState<{ name: string; logoUrl: string }>({
+    name: 'Snooker Kingdom Booking',
+    logoUrl: '',
+  });
   
   const [isVerificationAlertOpen, setIsVerificationAlertOpen] = useState(false);
   const [emailForVerification, setEmailForVerification] = useState('');
 
   useEffect(() => {
-    async function fetchSiteName() {
+    async function fetchBranding() {
       try {
         const settings = await getRoomSettings('1');
-        if (settings?.siteBranding?.name) {
-          setSiteName(settings.siteBranding.name);
+        if (settings?.siteBranding) {
+          setBranding({
+            name: settings.siteBranding.name || 'Snooker Kingdom Booking',
+            logoUrl: settings.siteBranding.logoUrl || '',
+          });
         }
       } catch (error) {
-        console.error("Failed to fetch site name:", error);
+        console.error("Failed to fetch site branding:", error);
       }
     }
-    fetchSiteName();
+    fetchBranding();
   }, []);
 
   const form = useForm<LoginFormValues>({
@@ -151,9 +157,13 @@ export default function LoginPage() {
         <Card className="w-full max-w-sm">
           <CardHeader className="text-center">
             <div className="flex justify-center items-center mb-4">
-               <Building2 className="h-8 w-8 text-primary" />
+              {branding.logoUrl ? (
+                <img src={branding.logoUrl} alt="Logo" className="h-16 w-16 object-contain" />
+              ) : (
+                <Building2 className="h-8 w-8 text-primary" />
+              )}
             </div>
-            <CardTitle>登入 {siteName}</CardTitle>
+            <CardTitle>{branding.name}</CardTitle>
             <CardDescription>
               歡迎回來，請登入您的帳戶。
             </CardDescription>
