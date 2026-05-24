@@ -1,0 +1,80 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userExists() {
+      return isSignedIn() && userDoc().data != null;
+    }
+
+    function isAdmin() {
+      return userExists() && userDoc().data.role.lower() == 'admin';
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if false;
+    }
+
+    match /users/{userId}/notifications/{notificationId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if false;
+    }
+
+    match /reservations/{reservationId} {
+      allow read: if isAdmin()
+        || (isSignedIn() && resource.data.userEmail == request.auth.token.email);
+      allow write: if false;
+    }
+
+    match /temporaryAccess/{docId} {
+      allow read: if isAdmin()
+        || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /temporaryAccessRequests/{docId} {
+      allow read: if isAdmin()
+        || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /temporaryAccessSegments/{docId} {
+      allow read: if isAdmin()
+        || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /roomSettings/{roomId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /globalSettings/{docId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /tokenRequests/{docId} {
+      allow read: if isAdmin()
+        || (isSignedIn() && resource.data.userEmail == request.auth.token.email);
+      allow write: if false;
+    }
+
+    match /_connection_test_/{docId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+  }
+}

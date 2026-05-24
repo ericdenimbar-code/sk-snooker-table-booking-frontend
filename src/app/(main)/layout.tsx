@@ -212,7 +212,7 @@ function UserNav() {
 
           {/* Admin-specific link */}
           {user?.role.toLowerCase() === 'admin' && (
-             <Link href="/admin" className={menuItemClass}>後台</Link>
+             <Link href="/admin/bookings" className={menuItemClass}>後台</Link>
           )}
         </nav>
         <div className="my-1 h-px w-full shrink-0 bg-border" />

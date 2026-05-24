@@ -17,7 +17,7 @@ export default function RootPage() {
         try {
           const userProfile = await getUserByEmail(user.email || '');
           if (userProfile?.role === 'Admin') {
-            router.replace('/admin');
+            router.replace('/admin/bookings');
           } else {
             router.replace('/new-reservation');
           }

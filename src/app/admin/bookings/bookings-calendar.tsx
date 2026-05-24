@@ -24,8 +24,9 @@ import type { Reservation, TemporaryAccess } from '@/types';
 import { cancelReservation } from '@/app/admin/bookings/actions';
 import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions';
 import { cn } from '@/lib/utils';
-import { db } from '@/lib/firebase';
+import { db, auth } from '@/lib/firebase';
 import { getAdminSlotPeriodHkt, getHktBookingStartUtc } from '@/lib/hkt-temp-segment';
+import { useAdminFirestoreSession } from '@/lib/use-admin-firestore-session';
 import {
   getAdminDayWindow,
   HKT,
@@ -62,6 +63,7 @@ function getHktAnchorDate(): Date {
 
 export function BookingsCalendar({ initialReservations, initialTempAccess }: BookingsCalendarProps) {
   const { toast } = useToast();
+  const firestoreSession = useAdminFirestoreSession();
   const [currentDate, setCurrentDate] = useState(getHktAnchorDate);
   const [reservations, setReservations] = useState<Reservation[]>(initialReservations);
   const [tempAccesses, setTempAccesses] = useState<TemporaryAccess[]>(initialTempAccess);
@@ -141,8 +143,32 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
   }, [events]);
 
   useEffect(() => {
+    if (!firestoreSession.ready) {
+      return;
+    }
+
+    if (!firestoreSession.isAdmin || !firestoreSession.uid) {
+      console.warn('[admin/bookings] Skip onSnapshot: admin session not ready', {
+        ready: firestoreSession.ready,
+        firebaseUid: firestoreSession.uid,
+        firebaseEmail: firestoreSession.email,
+        localRole: firestoreSession.localRole,
+        isAdmin: firestoreSession.isAdmin,
+        authCurrentUid: auth.currentUser?.uid ?? null,
+      });
+      return;
+    }
+
     const dayYmd = formatInTimeZone(currentDate, HKT, 'yyyy-MM-dd');
     const window = getAdminDayWindow(dayYmd);
+
+    const logContext = {
+      firebaseUid: firestoreSession.uid,
+      firebaseEmail: firestoreSession.email,
+      localRole: firestoreSession.localRole,
+      dayYmd,
+      queryDates: window.queryDates,
+    };
 
     const reservationsQuery = query(
       collection(db, 'reservations'),
@@ -175,7 +201,14 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
         finishRefresh();
       },
       (error) => {
-        console.error('reservations onSnapshot error:', error);
+        console.error('[admin/bookings] reservations onSnapshot failed', {
+          ...logContext,
+          collection: 'reservations',
+          code: error.code,
+          message: error.message,
+          authCurrentUid: auth.currentUser?.uid ?? null,
+          authCurrentEmail: auth.currentUser?.email ?? null,
+        });
         setIsRefreshing(false);
         manualRefreshRef.current = false;
         toastRef.current({
@@ -197,7 +230,14 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
         setTempAccesses(filtered);
       },
       (error) => {
-        console.error('temporaryAccess onSnapshot error:', error);
+        console.error('[admin/bookings] temporaryAccess onSnapshot failed', {
+          ...logContext,
+          collection: 'temporaryAccess',
+          code: error.code,
+          message: error.message,
+          authCurrentUid: auth.currentUser?.uid ?? null,
+          authCurrentEmail: auth.currentUser?.email ?? null,
+        });
         toastRef.current({
           variant: 'destructive',
           title: '臨時碼即時同步失敗',
@@ -210,7 +250,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
       unsubscribeReservations();
       unsubscribeTempAccess();
     };
-  }, [currentDate, listenerKey]);
+  }, [currentDate, listenerKey, firestoreSession.ready, firestoreSession.isAdmin, firestoreSession.uid]);
 
   const handleRefresh = () => {
     setIsRefreshing(true);

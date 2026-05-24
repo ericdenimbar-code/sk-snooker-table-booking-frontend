@@ -25,7 +25,7 @@ import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
 import { getRoomSettings } from './settings/actions';
 import { auth } from '@/lib/firebase';
-import { signOut } from 'firebase/auth';
+import { signOut, onAuthStateChanged } from 'firebase/auth';
 
 type StoredUser = {
   name: string;
@@ -52,8 +52,8 @@ function AdminNav({ onLinkClick }: { onLinkClick?: () => void }) {
   return (
     <nav className="grid items-start px-2 text-sm font-medium lg:px-4">
       <Link
-        href="/admin"
-        className={cn(linkClass, pathname === '/admin' && activeLinkClass)}
+        href="/admin/bookings"
+        className={cn(linkClass, isActive('/admin/bookings') && activeLinkClass)}
         onClick={handleClick}
       >
         <Home className="h-4 w-4" />
@@ -170,7 +170,7 @@ function AdminHeader({ siteName }: { siteName: string }) {
             </SheetTrigger>
             <SheetContent side="left" className="flex flex-col p-0">
                 <div className="flex h-14 items-center border-b px-4">
-                    <Link href="/admin" className="flex items-center gap-2 font-semibold" onClick={() => setIsSheetOpen(false)}>
+                    <Link href="/admin/bookings" className="flex items-center gap-2 font-semibold" onClick={() => setIsSheetOpen(false)}>
                         <Building2 className="h-6 w-6 text-primary" />
                         <span>{siteName} 後台</span>
                     </Link>
@@ -209,27 +209,48 @@ function AccessControlWrapper({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    try {
-      const userDataString = localStorage.getItem('user');
-      if (userDataString) {
-        const user: StoredUser = JSON.parse(userDataString);
-        // Case-insensitive check for 'Admin' role
-        if (user && user.role && user.role.toLowerCase() === 'admin') {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      try {
+        if (!firebaseUser) {
+          router.replace('/login');
+          setIsAuthorized(false);
+          setIsLoading(false);
+          return;
+        }
+
+        const userDataString = localStorage.getItem('user');
+        if (!userDataString) {
+          router.replace('/login');
+          setIsAuthorized(false);
+          setIsLoading(false);
+          return;
+        }
+
+        const user: StoredUser & { id?: string } = JSON.parse(userDataString);
+        const roleOk = user?.role && user.role.toLowerCase() === 'admin';
+        const idOk = user.id === firebaseUser.uid;
+
+        if (roleOk && idOk) {
           setIsAuthorized(true);
         } else {
-          // User is logged in but not an admin
+          console.warn('[admin] Access denied', {
+            firebaseUid: firebaseUser.uid,
+            localUserId: user.id,
+            localRole: user.role,
+          });
           router.replace('/login');
+          setIsAuthorized(false);
         }
-      } else {
-        // No user data found
+      } catch (error) {
+        console.error('Error verifying admin access:', error);
         router.replace('/login');
+        setIsAuthorized(false);
+      } finally {
+        setIsLoading(false);
       }
-    } catch (error) {
-      console.error("Error verifying admin access:", error);
-      router.replace('/login');
-    } finally {
-      setIsLoading(false);
-    }
+    });
+
+    return () => unsubscribe();
   }, [router]);
 
   if (isLoading) {
@@ -283,7 +304,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           <div className="hidden border-r bg-muted/40 md:block">
             <div className="flex h-full max-h-screen flex-col gap-2">
               <div className="flex h-14 items-center border-b px-4 lg:h-[60px] lg:px-6">
-                <Link href="/admin" className="flex items-center gap-2 font-semibold">
+                <Link href="/admin/bookings" className="flex items-center gap-2 font-semibold">
                   <Building2 className="h-6 w-6 text-primary" />
                   <span className="">{siteName} 後台</span>
                 </Link>
