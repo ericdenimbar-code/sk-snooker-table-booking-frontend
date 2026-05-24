@@ -61,10 +61,25 @@ export function sortReservationsByStartDesc(a: Reservation, b: Reservation): num
   return reservationStartMs(b) - reservationStartMs(a);
 }
 
+export function tempAccessStartMs(t: TemporaryAccess): number {
+  const from = t.effectiveFrom ?? t.validFrom;
+  return new Date(from).getTime();
+}
+
+export function tempAccessEndMs(t: TemporaryAccess): number {
+  const until = t.calendarUntil ?? t.validUntil;
+  return new Date(until).getTime();
+}
+
 export function tempAccessInAdminWindow(t: TemporaryAccess, window: AdminDayWindow): boolean {
-  if (t.status !== 'active' || !t.validFrom || !t.validUntil) return false;
-  const startMs = new Date(t.validFrom).getTime();
-  const endMs = new Date(t.validUntil).getTime();
+  if (t.status !== 'active') return false;
+  const startMs = tempAccessStartMs(t);
+  const endMs = tempAccessEndMs(t);
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return false;
   return endMs >= window.windowStartMs && startMs <= window.windowEndMs;
+}
+
+/** Firestore `validUntil`（ISO 字串）查詢下界 */
+export function adminTempAccessQueryFromIso(window: AdminDayWindow): string {
+  return new Date(window.windowStartMs).toISOString();
 }

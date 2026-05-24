@@ -14,14 +14,14 @@ import { zhTW } from 'date-fns/locale';
 import { ChevronLeft, ChevronRight, Loader2, Ban, Phone, Hash, User, Building2, RefreshCw, QrCode as QrCodeIcon, KeyRound } from 'lucide-react';
 import Image from 'next/image';
 import qrcode from 'qrcode';
-import { collection, limit, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { useToast } from '@/hooks/use-toast';
 import type { Reservation, TemporaryAccess } from '@/types';
-import { cancelReservation } from '@/app/admin/bookings/actions';
+import { cancelReservation, getAdminBookingsInitialData } from '@/app/admin/bookings/actions';
 import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions';
 import { cn } from '@/lib/utils';
 import { db, auth } from '@/lib/firebase';
@@ -34,6 +34,7 @@ import {
   reservationInAdminWindow,
   sortReservationsByStartDesc,
   tempAccessInAdminWindow,
+  adminTempAccessQueryFromIso,
 } from '@/lib/admin-bookings-query';
 
 
@@ -107,11 +108,11 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
       });
 
     const tempAccessEvents: CombinedEvent[] = tempAccesses
-      .filter(t => t.status === 'active' && t.validFrom && t.validUntil)
+      .filter(t => t.status === 'active' && (t.validFrom || t.effectiveFrom) && (t.validUntil || t.calendarUntil))
       .flatMap(t => {
         try {
-          const start = parseISO(t.validFrom);
-          const end = parseISO(t.validUntil);
+          const start = parseISO(t.effectiveFrom ?? t.validFrom);
+          const end = parseISO(t.calendarUntil ?? t.validUntil);
           if (!isValid(start) || !isValid(end)) return [];
           const isOvernight = !isSameHktDay(start, end);
           return [{ ...t, eventType: 'temp-access' as const, start, end, isOvernight }];
@@ -179,8 +180,23 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
 
     const tempAccessQuery = query(
       collection(db, 'temporaryAccess'),
+      where('validUntil', '>=', adminTempAccessQueryFromIso(window)),
+      orderBy('validUntil', 'desc'),
       limit(50),
     );
+
+    const applyTempAccessRows = (rows: TemporaryAccess[]) => {
+      const activeInWindow = rows
+        .filter((t) => t.status === 'active')
+        .filter((t) => tempAccessInAdminWindow(t, window));
+      setTempAccesses((prev) => {
+        if (activeInWindow.length > 0) return activeInWindow;
+        // 查詢有結果但皆不在視窗 → 當日確實無有效臨時碼
+        if (rows.length > 0) return [];
+        // 查詢為空時保留 SSR／上一輪資料，避免 limit 截斷誤清空
+        return prev;
+      });
+    };
 
     const finishRefresh = () => {
       if (manualRefreshRef.current) {
@@ -224,8 +240,13 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
         }
         if (collectionName === 'temporaryAccess') {
           console.warn(
-            '[admin/bookings] temporaryAccess permission-denied (logged only; check firestore.rules deploy)',
+            '[admin/bookings] temporaryAccess permission-denied; falling back to server fetch',
           );
+          void getAdminBookingsInitialData(dayYmd).then((result) => {
+            if (result.success && result.accessCodes) {
+              applyTempAccessRows(result.accessCodes);
+            }
+          });
           return;
         }
       }
@@ -266,10 +287,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
           const data = docSnap.data() as TemporaryAccess;
           return { ...data, id: data.id ?? docSnap.id };
         });
-        const filtered = rows
-          .filter((t) => t.status === 'active')
-          .filter((t) => tempAccessInAdminWindow(t, window));
-        setTempAccesses(filtered);
+        applyTempAccessRows(rows);
       },
       (error) => handleSnapshotError('temporaryAccess', error, '臨時碼即時同步失敗'),
     );

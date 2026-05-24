@@ -17,6 +17,7 @@ import {
   reservationInAdminWindow,
   sortReservationsByStartDesc,
   tempAccessInAdminWindow,
+  adminTempAccessQueryFromIso,
 } from '@/lib/admin-bookings-query';
 
 type AdminBookingsInitialData = {
@@ -46,7 +47,12 @@ export async function getAdminBookingsInitialData(dayYmd?: string): Promise<Admi
         .where('date', 'in', [...window.queryDates])
         .limit(50)
         .get(),
-      db.collection('temporaryAccess').limit(50).get(),
+      db
+        .collection('temporaryAccess')
+        .where('validUntil', '>=', adminTempAccessQueryFromIso(window))
+        .orderBy('validUntil', 'desc')
+        .limit(50)
+        .get(),
     ]);
 
     const reservations = resSnapshot.docs
