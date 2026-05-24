@@ -1,31 +1,38 @@
 
 'use client';
 
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   format,
   addDays,
   subDays,
-  isSameDay,
-  parse,
-  startOfDay,
   parseISO
 } from 'date-fns';
+import { formatInTimeZone } from 'date-fns-tz';
 import { zhTW } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Loader2, Edit, Ban, Phone, Hash, User, Building2, RefreshCw, Star, Mail, QrCode as QrCodeIcon, KeyRound } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, Ban, Phone, Hash, User, Building2, RefreshCw, QrCode as QrCodeIcon, KeyRound } from 'lucide-react';
 import Image from 'next/image';
 import qrcode from 'qrcode';
+import { collection, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import type { Reservation, TemporaryAccess } from '@/types';
-import { cancelReservation, resendConfirmationEmail } from '@/app/admin/bookings/actions';
+import { cancelReservation } from '@/app/admin/bookings/actions';
 import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions';
-import { getAllReservations, getAllTemporaryAccess } from '@/app/(main)/new-reservation/actions';
 import { cn } from '@/lib/utils';
+import { db } from '@/lib/firebase';
+import { getAdminSlotPeriodHkt, getHktBookingStartUtc } from '@/lib/hkt-temp-segment';
+import {
+  getAdminDayWindow,
+  HKT,
+  isSameHktDay,
+  reservationInAdminWindow,
+  sortReservationsByStartDesc,
+  tempAccessInAdminWindow,
+} from '@/lib/admin-bookings-query';
 
 
 type CombinedEvent = (Reservation | TemporaryAccess) & {
@@ -46,9 +53,15 @@ const timeToIndex = (time: string): number => {
     return hours * 2 + (minutes / 30);
 };
 
+function getHktAnchorDate(): Date {
+  const ymd = formatInTimeZone(new Date(), HKT, 'yyyy-MM-dd');
+  const [y, mo, d] = ymd.split('-').map(Number);
+  return new Date(y, mo - 1, d);
+}
+
 export function BookingsCalendar({ initialReservations, initialTempAccess }: BookingsCalendarProps) {
   const { toast } = useToast();
-  const [currentDate, setCurrentDate] = useState(startOfDay(new Date()));
+  const [currentDate, setCurrentDate] = useState(getHktAnchorDate);
   const [reservations, setReservations] = useState<Reservation[]>(initialReservations);
   const [tempAccesses, setTempAccesses] = useState<TemporaryAccess[]>(initialTempAccess);
   const [selectedEvent, setSelectedEvent] = useState<CombinedEvent | null>(null);
@@ -59,6 +72,8 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [listenerKey, setListenerKey] = useState(0);
+  const manualRefreshRef = useRef(false);
 
   const timeSlots = useMemo(() => Array.from({ length: 48 }, (_, i) => {
     const hours = Math.floor(i / 2);
@@ -71,10 +86,9 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
     const reservationEvents: CombinedEvent[] = reservations
       .filter(r => r.status !== 'Cancelled' && r.startTime && r.endTime)
       .map(r => {
-        const start = parse(`${r.date} ${r.startTime}`, 'yyyy-MM-dd HH:mm', new Date());
-        let end = parse(`${r.date} ${r.endTime}`, 'yyyy-MM-dd HH:mm', new Date());
-        const isOvernight = end <= start;
-        if (isOvernight) end = addDays(end, 1);
+        const start = getHktBookingStartUtc(r.date, r.startTime);
+        const end = getAdminSlotPeriodHkt(r.date, r.startTime, r.endTime).validUntil;
+        const isOvernight = !isSameHktDay(start, end);
         return { ...r, eventType: 'reservation', start, end, isOvernight };
       });
 
@@ -83,7 +97,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
       .map(t => {
         const start = parseISO(t.validFrom);
         const end = parseISO(t.validUntil);
-        const isOvernight = !isSameDay(start, end);
+        const isOvernight = !isSameHktDay(start, end);
         return { ...t, eventType: 'temp-access', start, end, isOvernight };
       });
 
@@ -106,33 +120,93 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
       
       if (!isMatch) return false;
       
-      const eventStartsToday = isSameDay(event.start, day);
-      const eventSpillsFromYesterday = event.isOvernight && isSameDay(event.end, day);
-      
-      // This is the fix: also include events that start today AND are overnight
+      const eventStartsToday = isSameHktDay(event.start, day);
+      const eventSpillsFromYesterday = event.isOvernight && isSameHktDay(event.end, day);
+
       return eventStartsToday || eventSpillsFromYesterday;
     });
   }, [events]);
 
-  const handleRefresh = async () => {
+  useEffect(() => {
+    const dayYmd = formatInTimeZone(currentDate, HKT, 'yyyy-MM-dd');
+    const window = getAdminDayWindow(dayYmd);
+
+    const reservationsQuery = query(
+      collection(db, 'reservations'),
+      where('date', '>=', window.queryDates[0]),
+      where('date', '<=', window.queryDates[2]),
+      orderBy('date', 'desc'),
+      orderBy('startTime', 'desc'),
+      limit(50),
+    );
+
+    const tempAccessQuery = query(
+      collection(db, 'temporaryAccess'),
+      where('status', '==', 'active'),
+      limit(50),
+    );
+
+    const finishRefresh = () => {
+      if (manualRefreshRef.current) {
+        manualRefreshRef.current = false;
+        setIsRefreshing(false);
+        toast({ title: '同步完成', description: '日曆資料已更新。' });
+      }
+    };
+
+    const unsubscribeReservations = onSnapshot(
+      reservationsQuery,
+      (snapshot) => {
+        const rows = snapshot.docs.map((docSnap) => docSnap.data() as Reservation);
+        const filtered = rows
+          .filter((r) => reservationInAdminWindow(r, window))
+          .sort(sortReservationsByStartDesc);
+        setReservations(filtered);
+        finishRefresh();
+      },
+      (error) => {
+        console.error('reservations onSnapshot error:', error);
+        setIsRefreshing(false);
+        manualRefreshRef.current = false;
+        toast({
+          variant: 'destructive',
+          title: '預訂即時同步失敗',
+          description: error.message,
+        });
+      },
+    );
+
+    const unsubscribeTempAccess = onSnapshot(
+      tempAccessQuery,
+      (snapshot) => {
+        const rows = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data() as TemporaryAccess;
+          return { ...data, id: data.id ?? docSnap.id };
+        });
+        const filtered = rows.filter((t) => tempAccessInAdminWindow(t, window));
+        setTempAccesses(filtered);
+      },
+      (error) => {
+        console.error('temporaryAccess onSnapshot error:', error);
+        toast({
+          variant: 'destructive',
+          title: '臨時碼即時同步失敗',
+          description: error.message,
+        });
+      },
+    );
+
+    return () => {
+      unsubscribeReservations();
+      unsubscribeTempAccess();
+    };
+  }, [currentDate, listenerKey, toast]);
+
+  const handleRefresh = () => {
     setIsRefreshing(true);
-    toast({ title: '正在同步...', description: '正在從資料庫重新整理所有記錄。' });
-    const [resResult, tempResult] = await Promise.all([getAllReservations(), getAllTemporaryAccess()]);
-    
-    if (resResult.success && resResult.reservations) {
-        setReservations(resResult.reservations);
-    } else {
-        toast({ variant: 'destructive', title: '預訂同步失敗', description: resResult.error });
-    }
-    
-    if (tempResult.success && tempResult.accessCodes) {
-        setTempAccesses(tempResult.accessCodes);
-    } else {
-        toast({ variant: 'destructive', title: '臨時碼同步失敗', description: tempResult.error });
-    }
-    
-    toast({ title: '同步完成', description: '日曆資料已更新。' });
-    setIsRefreshing(false);
+    manualRefreshRef.current = true;
+    toast({ title: '正在同步...', description: '正在重新連接即時監聽。' });
+    setListenerKey((key) => key + 1);
   };
   
   const handleEventClick = (event: CombinedEvent) => setSelectedEvent(event);
@@ -250,15 +324,17 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
 
 const EventButton = ({ event, currentDay, onClick, className }: { event: CombinedEvent, currentDay: Date, onClick: (e: CombinedEvent) => void, className?: string }) => {
     
-    const isSpillOver = !isSameDay(event.start, currentDay);
-    const dayStart = startOfDay(currentDay);
+    const isSpillOver = !isSameHktDay(event.start, currentDay);
+    const dayYmd = formatInTimeZone(currentDay, HKT, 'yyyy-MM-dd');
+    const [y, mo, d] = dayYmd.split('-').map(Number);
+    const dayStart = new Date(y, mo - 1, d);
 
     const startTimeForCalc = isSpillOver ? dayStart : event.start;
     let endTimeForCalc = event.end;
     
-    if (event.isOvernight && isSameDay(event.start, currentDay)) {
+    if (event.isOvernight && isSameHktDay(event.start, currentDay)) {
         endTimeForCalc = addDays(dayStart, 1);
-    } else if (!isSameDay(event.end, currentDay)) {
+    } else if (!isSameHktDay(event.end, currentDay)) {
         endTimeForCalc = addDays(dayStart, 1);
     }
     

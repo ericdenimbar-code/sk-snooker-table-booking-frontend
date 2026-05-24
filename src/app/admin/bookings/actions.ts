@@ -1,20 +1,75 @@
 
 'use server';
 
-import { db } from '@/lib/firebase-admin';
+import { formatInTimeZone } from 'date-fns-tz';
 import { revalidatePath } from 'next/cache';
+import admin from 'firebase-admin';
+import qrcode from 'qrcode';
+import { db } from '@/lib/firebase-admin';
 import { getUserByEmail } from '@/app/admin/users/actions';
 import { deleteGoogleCalendarEvent } from '@/lib/google-calendar';
-import type { Reservation, TemporaryAccess } from '@/types';
-import qrcode from 'qrcode';
 import { sendQrCodeEmail } from '@/lib/email';
 import { getRoomSettings } from '@/app/admin/settings/actions';
-import admin from 'firebase-admin';
+import type { Reservation, TemporaryAccess } from '@/types';
+import {
+  getAdminDayWindow,
+  HKT,
+  reservationInAdminWindow,
+  sortReservationsByStartDesc,
+  tempAccessInAdminWindow,
+} from '@/lib/admin-bookings-query';
+
+type AdminBookingsInitialData = {
+  success: boolean;
+  error?: string;
+  reservations?: Reservation[];
+  accessCodes?: TemporaryAccess[];
+};
 
 type ServerActionResponse = {
     success: boolean;
     error?: string;
 };
+
+export async function getAdminBookingsInitialData(dayYmd?: string): Promise<AdminBookingsInitialData> {
+  if (!db) {
+    return { success: false, error: '後端資料庫未連接。' };
+  }
+
+  const anchorYmd = dayYmd ?? formatInTimeZone(new Date(), HKT, 'yyyy-MM-dd');
+  const window = getAdminDayWindow(anchorYmd);
+
+  try {
+    const [resSnapshot, tempSnapshot] = await Promise.all([
+      db
+        .collection('reservations')
+        .where('date', '>=', window.queryDates[0])
+        .where('date', '<=', window.queryDates[2])
+        .orderBy('date', 'desc')
+        .orderBy('startTime', 'desc')
+        .limit(50)
+        .get(),
+      db.collection('temporaryAccess').where('status', '==', 'active').limit(50).get(),
+    ]);
+
+    const reservations = resSnapshot.docs
+      .map((doc) => doc.data() as Reservation)
+      .filter((r) => reservationInAdminWindow(r, window))
+      .sort(sortReservationsByStartDesc);
+
+    const accessCodes = tempSnapshot.docs
+      .map((doc) => {
+        const data = doc.data() as TemporaryAccess;
+        return { ...data, id: data.id ?? doc.id };
+      })
+      .filter((t) => tempAccessInAdminWindow(t, window));
+
+    return { success: true, reservations, accessCodes };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { success: false, error: `讀取預約資料失敗：${message}` };
+  }
+}
 
 // This function is now the single source of truth for cancelling a reservation.
 export async function cancelReservation(
