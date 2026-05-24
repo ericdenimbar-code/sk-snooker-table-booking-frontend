@@ -101,7 +101,7 @@ export default function LoginPage() {
           localStorage.setItem('user', JSON.stringify(userProfile));
           
           if (userProfile.role.toLowerCase() === 'admin') {
-              window.location.assign('/admin');
+              window.location.assign('/admin/bookings');
           } else {
               window.location.assign('/new-reservation');
           }

@@ -43,10 +43,7 @@ export async function getAdminBookingsInitialData(dayYmd?: string): Promise<Admi
     const [resSnapshot, tempSnapshot] = await Promise.all([
       db
         .collection('reservations')
-        .where('date', '>=', window.queryDates[0])
-        .where('date', '<=', window.queryDates[2])
-        .orderBy('date', 'desc')
-        .orderBy('startTime', 'desc')
+        .where('date', 'in', [...window.queryDates])
         .limit(50)
         .get(),
       db.collection('temporaryAccess').where('status', '==', 'active').limit(50).get(),

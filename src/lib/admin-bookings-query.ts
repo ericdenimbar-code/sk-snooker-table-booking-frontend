@@ -46,10 +46,15 @@ export function reservationEndMs(r: Reservation): number {
 }
 
 export function reservationInAdminWindow(r: Reservation, window: AdminDayWindow): boolean {
-  if (!r.startTime || !r.endTime) return false;
-  const startMs = reservationStartMs(r);
-  const endMs = reservationEndMs(r);
-  return endMs >= window.windowStartMs && startMs <= window.windowEndMs;
+  if (!r.date || !r.startTime || !r.endTime) return false;
+  try {
+    const startMs = reservationStartMs(r);
+    const endMs = reservationEndMs(r);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return false;
+    return endMs >= window.windowStartMs && startMs <= window.windowEndMs;
+  } catch {
+    return false;
+  }
 }
 
 export function sortReservationsByStartDesc(a: Reservation, b: Reservation): number {
@@ -57,8 +62,9 @@ export function sortReservationsByStartDesc(a: Reservation, b: Reservation): num
 }
 
 export function tempAccessInAdminWindow(t: TemporaryAccess, window: AdminDayWindow): boolean {
-  if (t.status !== 'active') return false;
+  if (t.status !== 'active' || !t.validFrom || !t.validUntil) return false;
   const startMs = new Date(t.validFrom).getTime();
   const endMs = new Date(t.validUntil).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return false;
   return endMs >= window.windowStartMs && startMs <= window.windowEndMs;
 }
