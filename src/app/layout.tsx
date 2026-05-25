@@ -5,6 +5,7 @@ import './globals.css';
 import { Toaster } from "@/components/ui/toaster"
 import { cn } from '@/lib/utils';
 import { getRoomSettings } from './admin/settings/actions';
+import { NotificationsRoot } from '@/components/notifications/notifications-root';
 
 const ptSans = PT_Sans({
   subsets: ['latin'],
@@ -34,7 +35,7 @@ export default function RootLayout({
   return (
     <html lang="zh-Hant" suppressHydrationWarning>
       <body className={cn("min-h-screen bg-background font-sans antialiased", ptSans.variable)}>
-        {children}
+        <NotificationsRoot>{children}</NotificationsRoot>
         <Toaster />
       </body>
     </html>

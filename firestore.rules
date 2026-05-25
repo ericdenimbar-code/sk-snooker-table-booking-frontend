@@ -67,6 +67,12 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // 登入頁頂部公告：無需登入即可讀取（避免 /login 500）
+    match /settings/notifications {
+      allow read: if true;
+      allow write: if false;
+    }
+
     match /tokenRequests/{docId} {
       allow read: if isAdmin();
       allow read: if isSignedIn() && resource.data.userEmail == request.auth.token.email;

@@ -13,6 +13,7 @@ import {
   Network,
   Menu,
   ClipboardList,
+  Megaphone,
   Building2,
   ShieldAlert,
   Loader2,
@@ -90,6 +91,14 @@ function AdminNav({ onLinkClick }: { onLinkClick?: () => void }) {
       >
         <Coins className="h-4 w-4" />
         價目及內容設定
+      </Link>
+      <Link
+        href="/admin/notifications"
+        className={cn(linkClass, isActive('/admin/notifications') && activeLinkClass)}
+        onClick={handleClick}
+      >
+        <Megaphone className="h-4 w-4" />
+        通知管理
       </Link>
       <Link
         href="/admin/export-list"
