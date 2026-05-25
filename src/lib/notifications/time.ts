@@ -31,13 +31,13 @@ export function isWithinActiveWindow(
   return t >= startTime.getTime() && t <= endTime.getTime();
 }
 
-/** Whether the notification should render on the client (HK time, ignores expired even if isActive). */
+/** Whether the notification passes time/active checks (role & content checked separately). */
 export function shouldShowNotification(block: {
   isActive: boolean;
   startTime: Date | null;
   endTime: Date | null;
 }): boolean {
-  if (!block.isActive || !block.content.trim()) return false;
+  if (!block.isActive) return false;
   if (isExpired(block.endTime)) return false;
   return isWithinActiveWindow(block.startTime, block.endTime);
 }

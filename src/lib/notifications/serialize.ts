@@ -1,10 +1,13 @@
 import type { NotificationBlock, SiteNotifications } from './types';
+import type { NotificationRoleId } from './roles';
+import { normalizeVisibleRoles } from './roles';
 
 export type SerializedNotificationBlock = {
   content: string;
   startTime: string | null;
   endTime: string | null;
   isActive: boolean;
+  visibleRoles: NotificationRoleId[];
 };
 
 export type SerializedSiteNotifications = {
@@ -18,6 +21,7 @@ function blockToSerialized(block: NotificationBlock): SerializedNotificationBloc
     startTime: block.startTime?.toISOString() ?? null,
     endTime: block.endTime?.toISOString() ?? null,
     isActive: block.isActive,
+    visibleRoles: normalizeVisibleRoles(block.visibleRoles),
   };
 }
 
@@ -27,6 +31,7 @@ function serializedToBlock(block: SerializedNotificationBlock): NotificationBloc
     startTime: block.startTime ? new Date(block.startTime) : null,
     endTime: block.endTime ? new Date(block.endTime) : null,
     isActive: block.isActive,
+    visibleRoles: normalizeVisibleRoles(block.visibleRoles),
   };
 }
 

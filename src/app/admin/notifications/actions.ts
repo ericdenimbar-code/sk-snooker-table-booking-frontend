@@ -20,6 +20,7 @@ function adminBlockToFirestore(block: NotificationBlock) {
     startTime: block.startTime ? Timestamp.fromDate(block.startTime) : null,
     endTime: block.endTime ? Timestamp.fromDate(block.endTime) : null,
     isActive: block.isActive,
+    visibleRoles: block.visibleRoles,
   };
 }
 

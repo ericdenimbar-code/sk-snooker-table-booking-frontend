@@ -2,6 +2,7 @@
 
 import { X } from 'lucide-react';
 import { useNotifications } from '@/hooks/use-notifications';
+import { NotificationHtml } from './notification-html';
 import { cn } from '@/lib/utils';
 
 export function TopBanner() {
@@ -20,9 +21,10 @@ export function TopBanner() {
       aria-label="網站公告"
     >
       <div className="mx-auto flex w-full max-w-6xl items-center gap-3">
-        <p className="flex-1 whitespace-pre-wrap text-sm leading-relaxed sm:text-base">
-          {notifications.topBanner.content}
-        </p>
+        <NotificationHtml
+          html={notifications.topBanner.content}
+          className="flex-1 text-sm text-white sm:text-base"
+        />
         <button
           type="button"
           onClick={dismissTopBanner}

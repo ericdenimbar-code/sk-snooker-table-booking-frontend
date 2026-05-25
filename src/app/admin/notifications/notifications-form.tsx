@@ -4,12 +4,17 @@ import { useState } from 'react';
 import type { NotificationBlock } from '@/lib/notifications/types';
 import { publishSiteNotifications } from './actions';
 import type { SerializedSiteNotifications } from '@/lib/notifications/serialize';
+import {
+  DEFAULT_VISIBLE_ROLES,
+  NOTIFICATION_ROLE_OPTIONS,
+  type NotificationRoleId,
+} from '@/lib/notifications/roles';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { DateTimePicker } from '@/components/custom/datetime-picker';
+import { RichTextLiteEditor } from '@/components/custom/rich-text-lite-editor';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Megaphone, Smartphone } from 'lucide-react';
 import { getEffectiveIsActive, isExpired } from '@/lib/notifications/time';
@@ -20,8 +25,58 @@ type NotificationsFormProps = {
   initialData: SerializedSiteNotifications;
 };
 
-function cloneBlock(block: SerializedSiteNotifications['popup']): SerializedSiteNotifications['popup'] {
-  return { ...block };
+function cloneBlock(
+  block: SerializedSiteNotifications['popup']
+): SerializedSiteNotifications['popup'] {
+  return {
+    ...block,
+    visibleRoles: [...(block.visibleRoles ?? DEFAULT_VISIBLE_ROLES)],
+  };
+}
+
+function RoleCheckboxes({
+  visibleRoles,
+  onChange,
+  sectionId,
+}: {
+  visibleRoles: NotificationRoleId[];
+  onChange: (roles: NotificationRoleId[]) => void;
+  sectionId: string;
+}) {
+  const toggleRole = (roleId: NotificationRoleId, checked: boolean) => {
+    if (checked) {
+      onChange(Array.from(new Set([...visibleRoles, roleId])));
+    } else {
+      onChange(visibleRoles.filter((r) => r !== roleId));
+    }
+  };
+
+  return (
+    <div className="grid gap-2">
+      <Label>可見會員類別</Label>
+      <p className="text-xs text-muted-foreground">
+        未登入訪客視同「普通會員 (USER)」。預設全選以避免公告無人可見。
+      </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:gap-6">
+        {NOTIFICATION_ROLE_OPTIONS.map((option) => {
+          const checked = visibleRoles.includes(option.id);
+          const checkboxId = `${sectionId}-role-${option.id}`;
+          return (
+            <div key={option.id} className="flex items-center gap-2">
+              <Checkbox
+                id={checkboxId}
+                checked={checked}
+                onCheckedChange={(value) => toggleRole(option.id, !!value)}
+              />
+              <Label htmlFor={checkboxId} className="cursor-pointer font-normal">
+                {option.label}
+              </Label>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function NotificationSection({
@@ -33,6 +88,7 @@ function NotificationSection({
   staged,
   onStage,
   isStaging,
+  sectionId,
 }: {
   title: string;
   description: string;
@@ -42,17 +98,19 @@ function NotificationSection({
   staged: boolean;
   onStage: () => void;
   isStaging: boolean;
+  sectionId: string;
 }) {
   const parsedBlock: NotificationBlock = {
     content: block.content,
     startTime: block.startTime ? new Date(block.startTime) : null,
     endTime: block.endTime ? new Date(block.endTime) : null,
     isActive: block.isActive,
+    visibleRoles: block.visibleRoles ?? [...DEFAULT_VISIBLE_ROLES],
   };
 
   const expired = isExpired(parsedBlock.endTime);
   const effectiveActive = getEffectiveIsActive(parsedBlock);
-  const dateFieldsMuted = !block.isActive;
+  const datesDisabled = !block.isActive;
 
   return (
     <Card>
@@ -65,7 +123,7 @@ function NotificationSection({
           <div className="flex flex-wrap gap-2">
             {staged && <Badge variant="secondary">已暫存</Badge>}
             {expired && block.isActive && (
-              <Badge variant="outline" className="text-amber-700 border-amber-300">
+              <Badge variant="outline" className="border-amber-300 text-amber-700">
                 已過期（前端不顯示）
               </Badge>
             )}
@@ -74,21 +132,23 @@ function NotificationSection({
         <CardDescription>{description}</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <div className="grid gap-2">
-          <Label htmlFor={`${title}-content`}>公告內容</Label>
-          <Textarea
-            id={`${title}-content`}
-            value={block.content}
-            onChange={(e) => onChange({ ...block, content: e.target.value })}
-            placeholder="輸入公告文字…"
-            className="min-h-[120px]"
-          />
-        </div>
+        <RichTextLiteEditor
+          id={`${sectionId}-content`}
+          label="公告內容"
+          value={block.content}
+          onChange={(content) => onChange({ ...block, content })}
+        />
+
+        <RoleCheckboxes
+          sectionId={sectionId}
+          visibleRoles={block.visibleRoles ?? [...DEFAULT_VISIBLE_ROLES]}
+          onChange={(visibleRoles) => onChange({ ...block, visibleRoles })}
+        />
 
         <div
           className={cn(
             'grid gap-4 sm:grid-cols-2',
-            dateFieldsMuted && 'opacity-50'
+            datesDisabled && 'opacity-50'
           )}
         >
           <DateTimePicker
@@ -100,6 +160,7 @@ function NotificationSection({
                 startTime: startTime?.toISOString() ?? null,
               })
             }
+            disabled={datesDisabled}
           />
           <DateTimePicker
             label="結束時間 (HKT)"
@@ -110,18 +171,19 @@ function NotificationSection({
                 endTime: endTime?.toISOString() ?? null,
               })
             }
+            disabled={datesDisabled}
           />
         </div>
 
         <div className="flex items-center gap-3">
           <Checkbox
-            id={`${title}-active`}
+            id={`${sectionId}-active`}
             checked={block.isActive}
             onCheckedChange={(checked) =>
               onChange({ ...block, isActive: !!checked })
             }
           />
-          <Label htmlFor={`${title}-active`} className="cursor-pointer font-normal">
+          <Label htmlFor={`${sectionId}-active`} className="cursor-pointer font-normal">
             啟動此通知
             {!effectiveActive && block.isActive && !expired && (
               <span className="ml-2 text-xs text-muted-foreground">
@@ -217,8 +279,9 @@ export function NotificationsForm({ initialData }: NotificationsFormProps) {
   return (
     <div className="flex flex-col gap-6">
       <NotificationSection
+        sectionId="popup"
         title="全屏彈窗 (登入後)"
-        description="用戶登入後，每個瀏覽器 Session 僅顯示一次。須在有效時間內且已啟動才會顯示。"
+        description="登入後且在有效時間內顯示。關閉僅隱藏至重新整理或重新登入；重新整理頁面後會再次彈出。"
         icon={Smartphone}
         block={popupDraft}
         onChange={setPopupDraft}
@@ -228,8 +291,9 @@ export function NotificationsForm({ initialData }: NotificationsFormProps) {
       />
 
       <NotificationSection
+        sectionId="top-banner"
         title="頂部公告欄"
-        description="登入前後均會顯示，佔據螢幕頂部約 1/10 高度。用戶關閉後，本次 Session 內切換頁面仍保持關閉，直至內容更新。"
+        description="登入前後均可顯示（未登入訪客依 USER 類別判斷）。關閉後在同一次瀏覽中保持隱藏，重新整理後再次顯示。"
         icon={Megaphone}
         block={topBannerDraft}
         onChange={setTopBannerDraft}
@@ -242,8 +306,8 @@ export function NotificationsForm({ initialData }: NotificationsFormProps) {
         <CardContent className="flex flex-col gap-4 py-6 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="font-semibold">確定生效</p>
-            <p className="text-sm text-muted-foreground">
-              按下後才會正式寫入 Firestore（settings/notifications），所有在線用戶透過即時監聽立即更新。
+            <p className="mt-1 text-sm text-muted-foreground">
+              按下後才會正式寫入 Firestore（settings/notifications），含文字格式與可見類別。
               {hasAnythingToPublish
                 ? ' 將發布已暫存及目前表單內容。'
                 : ' 若未暫存，將以目前表單內容發布。'}

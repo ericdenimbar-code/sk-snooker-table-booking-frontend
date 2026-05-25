@@ -27,6 +27,7 @@
     "clsx": "^2.1.1",
     "date-fns": "^3.6.0",
     "date-fns-tz": "^3.2.0",
+    "dompurify": "^3.4.5",
     "firebase": "^10.12.3",
     "firebase-admin": "^12.2.0",
     "googleapis": "^140.0.1",
@@ -44,6 +45,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/dompurify": "^3.0.5",
     "@types/node": "^20",
     "@types/nodemailer": "^6.4.15",
     "@types/qrcode": "^1.5.5",

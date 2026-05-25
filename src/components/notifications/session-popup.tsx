@@ -2,23 +2,20 @@
 
 import { X } from 'lucide-react';
 import { useNotifications } from '@/hooks/use-notifications';
+import { NotificationHtml } from './notification-html';
 import { cn } from '@/lib/utils';
 
 export function SessionPopup() {
-  const { showPopup, notifications, markPopupSeen, isLoading } = useNotifications();
+  const { showPopup, notifications, dismissPopup, isLoading } = useNotifications();
 
   if (isLoading || !showPopup) return null;
-
-  const handleClose = () => {
-    markPopupSeen();
-  };
 
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm md:p-8"
       role="dialog"
       aria-modal="true"
-      aria-label="重要通知"
+      aria-label="公告"
     >
       <div
         className={cn(
@@ -29,7 +26,7 @@ export function SessionPopup() {
       >
         <button
           type="button"
-          onClick={handleClose}
+          onClick={dismissPopup}
           className="absolute right-3 top-3 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-black/50 text-white transition-colors hover:bg-black/70 md:right-4 md:top-4"
           aria-label="關閉"
         >
@@ -37,13 +34,13 @@ export function SessionPopup() {
         </button>
 
         <div className="flex flex-1 flex-col overflow-y-auto p-6 pt-14 md:p-8 md:pt-16">
-          <h2 className="mb-4 text-lg font-bold text-foreground">重要通知</h2>
-          <p className="whitespace-pre-wrap text-base leading-relaxed text-foreground/90">
-            {notifications.popup.content}
-          </p>
+          <NotificationHtml
+            html={notifications.popup.content}
+            className="text-base text-foreground/90"
+          />
           <button
             type="button"
-            onClick={handleClose}
+            onClick={dismissPopup}
             className="mt-8 w-full rounded-full bg-primary py-3 text-sm font-bold text-primary-foreground transition-opacity hover:opacity-90"
           >
             我知道了

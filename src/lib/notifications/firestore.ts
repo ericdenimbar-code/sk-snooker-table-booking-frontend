@@ -1,12 +1,14 @@
 import type { Timestamp } from 'firebase/firestore';
 import type { NotificationBlock, SiteNotifications } from './types';
 import { EMPTY_NOTIFICATION_BLOCK, DEFAULT_SITE_NOTIFICATIONS } from './types';
+import { normalizeVisibleRoles } from './roles';
 
 type FirestoreNotificationBlock = {
   content?: string;
   startTime?: Timestamp | null;
   endTime?: Timestamp | null;
   isActive?: boolean;
+  visibleRoles?: string[];
 };
 
 type FirestoreSiteNotifications = {
@@ -27,6 +29,7 @@ function parseBlock(raw: FirestoreNotificationBlock | undefined): NotificationBl
     startTime: timestampToDate(raw.startTime ?? undefined),
     endTime: timestampToDate(raw.endTime ?? undefined),
     isActive: raw.isActive ?? false,
+    visibleRoles: normalizeVisibleRoles(raw.visibleRoles),
   };
 }
 

@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -15,36 +16,43 @@ import { parseSiteNotificationsFromFirestore } from '@/lib/notifications/firesto
 import type { NotificationBlock, SiteNotifications } from '@/lib/notifications/types';
 import { DEFAULT_SITE_NOTIFICATIONS } from '@/lib/notifications/types';
 import { shouldShowNotification } from '@/lib/notifications/time';
-
-const NOTIFICATIONS_DOC_PATH = 'settings/notifications';
-const TOP_BANNER_DISMISSED_KEY = 'topBannerDismissedContent';
-const POPUP_SEEN_CONTENT_KEY = 'hasSeenPopupContent';
+import { hasNotificationContent } from '@/lib/notifications/sanitize';
+import { isRoleVisible } from '@/lib/notifications/roles';
 
 type NotificationsContextValue = {
   notifications: SiteNotifications;
   isLoading: boolean;
   showPopup: boolean;
   showTopBanner: boolean;
-  isTopBannerDismissed: boolean;
   dismissTopBanner: () => void;
-  markPopupSeen: () => void;
+  dismissPopup: () => void;
   isLoggedIn: boolean;
+  userRole: string | null;
 };
 
 const NotificationsContext = createContext<NotificationsContextValue | undefined>(
   undefined
 );
 
-function useLoggedInState() {
+function useAuthUserState() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [userRole, setUserRole] = useState<string | null>(null);
 
   useEffect(() => {
     const check = () => {
       try {
         const raw = localStorage.getItem('user');
-        setIsLoggedIn(!!raw && !!JSON.parse(raw));
+        if (!raw) {
+          setIsLoggedIn(false);
+          setUserRole(null);
+          return;
+        }
+        const parsed = JSON.parse(raw) as { role?: string };
+        setIsLoggedIn(true);
+        setUserRole(parsed.role ?? null);
       } catch {
         setIsLoggedIn(false);
+        setUserRole(null);
       }
     };
 
@@ -57,12 +65,19 @@ function useLoggedInState() {
     };
   }, []);
 
-  return isLoggedIn;
+  return { isLoggedIn, userRole };
 }
 
-function getDismissedBannerContent(): string | null {
-  if (typeof window === 'undefined') return null;
-  return sessionStorage.getItem(TOP_BANNER_DISMISSED_KEY);
+function passesNotificationFilters(
+  block: NotificationBlock,
+  userRole: string | null,
+  isLoggedIn: boolean,
+  requireLogin: boolean
+): boolean {
+  if (requireLogin && !isLoggedIn) return false;
+  if (!shouldShowNotification(block)) return false;
+  if (!hasNotificationContent(block.content)) return false;
+  return isRoleVisible(block.visibleRoles, userRole, isLoggedIn);
 }
 
 export function NotificationsProvider({ children }: { children: ReactNode }) {
@@ -70,27 +85,9 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     DEFAULT_SITE_NOTIFICATIONS
   );
   const [isLoading, setIsLoading] = useState(true);
-  const [hasSeenPopup, setHasSeenPopup] = useState(true);
-  const [dismissedBannerContent, setDismissedBannerContent] = useState<string | null>(
-    null
-  );
-  const isLoggedIn = useLoggedInState();
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    setDismissedBannerContent(getDismissedBannerContent());
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const content = notifications.popup.content.trim();
-    const seenContent = sessionStorage.getItem(POPUP_SEEN_CONTENT_KEY);
-    if (!content) {
-      setHasSeenPopup(true);
-      return;
-    }
-    setHasSeenPopup(seenContent === content);
-  }, [notifications.popup.content]);
+  const [isPopupDismissed, setIsPopupDismissed] = useState(false);
+  const [isTopBannerDismissed, setIsTopBannerDismissed] = useState(false);
+  const { isLoggedIn, userRole } = useAuthUserState();
 
   useEffect(() => {
     if (!db) {
@@ -118,26 +115,42 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     return () => unsubscribe();
   }, []);
 
-  const showTopBannerRaw = shouldShowNotification(notifications.topBanner);
-  const showTopBanner =
-    showTopBannerRaw &&
-    dismissedBannerContent !== notifications.topBanner.content.trim();
+  const popupEligible = passesNotificationFilters(
+    notifications.popup,
+    userRole,
+    isLoggedIn,
+    true
+  );
 
-  const showPopup =
-    isLoggedIn &&
-    shouldShowNotification(notifications.popup) &&
-    !hasSeenPopup;
+  const topBannerEligible = passesNotificationFilters(
+    notifications.topBanner,
+    userRole,
+    isLoggedIn,
+    false
+  );
+
+  const showPopup = popupEligible && !isPopupDismissed;
+  const showTopBanner = topBannerEligible && !isTopBannerDismissed;
 
   const dismissTopBanner = useCallback(() => {
-    const content = notifications.topBanner.content.trim();
-    sessionStorage.setItem(TOP_BANNER_DISMISSED_KEY, content);
-    setDismissedBannerContent(content);
-  }, [notifications.topBanner.content]);
+    setIsTopBannerDismissed(true);
+  }, []);
 
-  const markPopupSeen = useCallback(() => {
-    const content = notifications.popup.content.trim();
-    sessionStorage.setItem(POPUP_SEEN_CONTENT_KEY, content);
-    setHasSeenPopup(true);
+  const dismissPopup = useCallback(() => {
+    setIsPopupDismissed(true);
+  }, []);
+
+  const prevPopupContentRef = useRef('');
+
+  useEffect(() => {
+    const content = notifications.popup.content;
+    if (
+      prevPopupContentRef.current &&
+      prevPopupContentRef.current !== content
+    ) {
+      setIsPopupDismissed(false);
+    }
+    prevPopupContentRef.current = content;
   }, [notifications.popup.content]);
 
   const value = useMemo(
@@ -146,20 +159,20 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       isLoading,
       showPopup,
       showTopBanner,
-      isTopBannerDismissed: !showTopBanner && showTopBannerRaw,
       dismissTopBanner,
-      markPopupSeen,
+      dismissPopup,
       isLoggedIn,
+      userRole,
     }),
     [
       notifications,
       isLoading,
       showPopup,
       showTopBanner,
-      showTopBannerRaw,
       dismissTopBanner,
-      markPopupSeen,
+      dismissPopup,
       isLoggedIn,
+      userRole,
     ]
   );
 

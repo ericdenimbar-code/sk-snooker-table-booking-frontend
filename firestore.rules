@@ -67,7 +67,7 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // 登入頁頂部公告：無需登入即可讀取（避免 /login 500）
+    // 網站公告：登入前頂部欄需公開讀取；已登入用戶亦可讀取比對角色
     match /settings/notifications {
       allow read: if true;
       allow write: if false;
