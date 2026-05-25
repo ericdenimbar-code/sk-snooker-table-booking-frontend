@@ -180,7 +180,7 @@ export default function LoginPage() {
           </div>
 
           <div className="w-full rounded-2xl border border-white/10 bg-black/40 px-6 pb-8 pt-16 backdrop-blur-md sm:px-8">
-            <h1 className="text-center text-xl font-bold uppercase tracking-wide text-white sm:text-2xl">
+            <h1 className="text-center text-[1.5rem] font-bold uppercase leading-8 tracking-wide text-white sm:text-[1.8rem] sm:leading-[2rem]">
               {branding.name}
             </h1>
             <p className="mt-2 text-center text-sm text-gray-300">
