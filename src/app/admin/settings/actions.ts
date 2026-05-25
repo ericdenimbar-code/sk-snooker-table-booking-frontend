@@ -55,6 +55,7 @@ export type PaymentInfo = {
 export type SiteBranding = {
   name: string;
   logoUrl: string;
+  loginBackgroundUrl?: string;
 };
 
 export type RoomSettings = {
@@ -115,6 +116,7 @@ function getDefaultRoomSettingsTemplate(roomId: string): RoomSettings {
     siteBranding: {
       name: 'Snooker Kingdom Booking',
       logoUrl: '',
+      loginBackgroundUrl: '',
     },
     selectRoomPage: {
       title: '選擇枱號',

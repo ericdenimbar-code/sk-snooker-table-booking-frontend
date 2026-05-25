@@ -19,7 +19,7 @@ type DashboardFormProps = {
 export function DashboardForm({ initialRoom1Settings, initialRoom2Settings }: DashboardFormProps) {
   // State for global settings (from room '1')
   const [siteBranding, setSiteBranding] = useState(
-    initialRoom1Settings.siteBranding || { name: 'RoomReserva', logoUrl: '' }
+    initialRoom1Settings.siteBranding || { name: 'RoomReserva', logoUrl: '', loginBackgroundUrl: '' }
   );
   const [contactInfo, setContactInfo] = useState(
     initialRoom1Settings.contactInfo || { name: '', email: '', whatsapp: '', address: '', additionalInfo: '' }
@@ -54,6 +54,27 @@ export function DashboardForm({ initialRoom1Settings, initialRoom2Settings }: Da
 
   const handleRemoveLogo = () => {
     setSiteBranding(prev => ({ ...prev, logoUrl: '' }));
+  };
+
+  const handleLoginBackgroundChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && file.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setSiteBranding(prev => ({ ...prev, loginBackgroundUrl: reader.result as string }));
+      };
+      reader.readAsDataURL(file);
+    } else if (file) {
+      toast({
+        variant: 'destructive',
+        title: '檔案類型錯誤',
+        description: '請選擇一個圖片檔案。',
+      });
+    }
+  };
+
+  const handleRemoveLoginBackground = () => {
+    setSiteBranding(prev => ({ ...prev, loginBackgroundUrl: '' }));
   };
 
   const handleSaveBranding = async () => {
@@ -102,7 +123,7 @@ export function DashboardForm({ initialRoom1Settings, initialRoom2Settings }: Da
         <CardHeader>
           <CardTitle>商標及公司名稱設定</CardTitle>
           <CardDescription>
-            此處的設定將會顯示在前台左上角的 LOGO 及名稱位置。
+            此處的設定將會顯示在前台 LOGO、名稱，以及登入頁面的背景圖。
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -139,6 +160,42 @@ export function DashboardForm({ initialRoom1Settings, initialRoom2Settings }: Da
               </div>
               <p className="text-xs text-muted-foreground">
                 建議尺寸：128x128 像素，支援 PNG, JPG, SVG, GIF 格式。
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="login-background-upload">登入頁背景圖</Label>
+              <div className="flex items-center gap-4">
+                {siteBranding.loginBackgroundUrl ? (
+                  <div className="relative">
+                    <img
+                      src={siteBranding.loginBackgroundUrl}
+                      alt="Login background preview"
+                      className="h-24 w-16 rounded-md border object-cover"
+                    />
+                    <Button
+                      variant="destructive"
+                      size="icon"
+                      className="absolute -top-2 -right-2 h-6 w-6 rounded-full"
+                      onClick={handleRemoveLoginBackground}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex h-24 w-16 items-center justify-center rounded-md border border-dashed bg-muted">
+                    <ImagePlus className="h-8 w-8 text-muted-foreground" />
+                  </div>
+                )}
+                <Input
+                  id="login-background-upload"
+                  type="file"
+                  accept="image/png, image/jpeg, image/webp"
+                  onChange={handleLoginBackgroundChange}
+                  className="max-w-xs"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                建議直向高清圖片，將以全螢幕覆蓋顯示於登入頁。支援 PNG、JPG、WEBP。
               </p>
             </div>
           </div>
