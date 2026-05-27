@@ -37,11 +37,7 @@ export default async function TemporaryAccessPage() {
                 <CardHeader>
                     <CardTitle>選擇進出時段</CardTitle>
                     <CardDescription>
-<<<<<<< Updated upstream
                       每次有效 30 分鐘，取消後方可再申請。
-=======
-                        以香港時間劃分 A 段（03:00–14:59）與 B 段（15:00–翌日 02:59）；同一時段內共用同一 QR 密鑰。VVIP 每次有效 30 分鐘，取消後方可再申請；管理員可無限次申請並以電郵轉發訪客。
->>>>>>> Stashed changes
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
