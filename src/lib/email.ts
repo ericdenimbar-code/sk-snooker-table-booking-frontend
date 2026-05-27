@@ -166,6 +166,7 @@ export async function sendTopUpConfirmationEmail(
     }
 }
 
+<<<<<<< Updated upstream
 export async function sendTemporaryAccessQrEmail(params: {
     recipientEmail: string;
     qrSecret: string;
@@ -176,13 +177,26 @@ export async function sendTemporaryAccessQrEmail(params: {
     audience: 'vvip' | 'admin' | 'other';
     contactInfo: ContactInfo;
 }): Promise<boolean> {
+=======
+export async function sendTemporaryAccessQrEmail(
+    recipientEmail: string,
+    qrSecret: string,
+    qrCodeDataUrl: string,
+    validFromIso: string,
+    validUntilIso: string,
+    contactInfo: ContactInfo,
+): Promise<boolean> {
+>>>>>>> Stashed changes
     if (!transporter) {
         console.error('Cannot send email: Email service is not configured or failed to initialize.');
         return false;
     }
 
+<<<<<<< Updated upstream
     const { recipientEmail, qrSecret, qrCodeDataUrl, requestedAtIso, audience, contactInfo } = params;
 
+=======
+>>>>>>> Stashed changes
     const qrCodeCid = `tempaccess_${qrSecret.slice(0, 16)}@sk-booking.com`;
     const base64Data = qrCodeDataUrl.split(';base64,').pop();
     if (!base64Data) {
@@ -190,6 +204,7 @@ export async function sendTemporaryAccessQrEmail(params: {
         return false;
     }
 
+<<<<<<< Updated upstream
     const requestedLabel = formatInTimeZone(new Date(requestedAtIso), 'Asia/Hong_Kong', 'yyyy-MM-dd HH:mm');
 
     const validityHtml =
@@ -198,6 +213,10 @@ export async function sendTemporaryAccessQrEmail(params: {
             : audience === 'vvip'
               ? `<p>您於香港時間 <strong>${requestedLabel}</strong> 按下申請。此臨時進出碼於接下來 <strong>30 分鐘</strong>內有效，請於時限內使用附件 QR Code。</p>`
               : `<p>您於香港時間 <strong>${requestedLabel}</strong> 按下申請。此臨時進出碼於接下來 <strong>30 分鐘</strong>內有效，請於時限內使用附件 QR Code。</p>`;
+=======
+    const fromLabel = formatInTimeZone(new Date(validFromIso), 'Asia/Hong_Kong', 'yyyy-MM-dd HH:mm');
+    const untilLabel = formatInTimeZone(new Date(validUntilIso), 'Asia/Hong_Kong', 'yyyy-MM-dd HH:mm');
+>>>>>>> Stashed changes
 
     const mailOptions = {
         from: `"${EMAIL_FROM_NAME}" <${EMAIL_SERVER_USER}>`,
@@ -207,7 +226,15 @@ export async function sendTemporaryAccessQrEmail(params: {
             <div style="font-family: Arial, sans-serif; line-height: 1.6;">
                 <h2>臨時進出碼</h2>
                 <p>您好，</p>
+<<<<<<< Updated upstream
                 ${validityHtml}
+=======
+                <p>以下為您的臨時進出二維碼，請於指定時段內使用。</p>
+                <ul>
+                    <li><strong>有效開始（香港時間）:</strong> ${fromLabel}</li>
+                    <li><strong>有效結束（香港時間）:</strong> ${untilLabel}</li>
+                </ul>
+>>>>>>> Stashed changes
                 <div style="text-align: center; margin: 20px 0;">
                     <img src="cid:${qrCodeCid}" alt="Temporary access QR Code" style="width: 250px; height: 250px;" />
                 </div>

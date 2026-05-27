@@ -300,6 +300,7 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
 }
 
 /**
+<<<<<<< Updated upstream
  * 單筆申請（VVIP / Admin）：寫入專用日曆，eventId 為申請 ID，可重疊新增。
  */
 export async function syncTemporaryAccessApplicationToCalendar(params: {
@@ -339,6 +340,28 @@ export async function syncTemporaryAccessApplicationToCalendar(params: {
             applicationId: params.applicationId,
         });
     }
+=======
+ * 臨時進出 A/B 段共用密鑰：寫入專用日曆（每 segment 一筆事件）。
+ */
+export async function syncTemporaryAccessSegmentToCalendar(params: {
+    segmentKey: string;
+    secret: string;
+    startIso: string;
+    endIso: string;
+}): Promise<boolean> {
+    if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY || !CALENDAR_ID_DOOR_CONTROL_TEMP) {
+        console.warn('Temporary access segment calendar is not configured (GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp).');
+        return false;
+    }
+    const eventId = params.segmentKey.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    const created = await createEvent(CALENDAR_ID_DOOR_CONTROL_TEMP, {
+        summary: params.secret,
+        description: `臨時進出時段 ${params.segmentKey}`,
+        start: params.startIso,
+        end: params.endIso,
+        eventId,
+    });
+>>>>>>> Stashed changes
     return !!created;
 }
 
@@ -364,7 +387,10 @@ export async function deleteGoogleCalendarEvent(reservation: Reservation | Tempo
     
     if ('validFrom' in reservation) {
         const temp = reservation as TemporaryAccess;
+<<<<<<< Updated upstream
         // 臨時進出（含 Admin / VVIP）不刪除 GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp 上的事件
+=======
+>>>>>>> Stashed changes
         if (temp.segmentKey) {
             return true;
         }

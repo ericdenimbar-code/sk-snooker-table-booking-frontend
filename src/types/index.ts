@@ -31,6 +31,7 @@ export type TemporaryAccess = {
   validFrom: string; // ISO String
   validUntil: string; // ISO String
   status: 'active' | 'expired' | 'cancelled';
+<<<<<<< Updated upstream
   /** 每日密鑰識別，例如 D-2026-05-14（03:00 HKT 起算） */
   segmentKey?: string;
   /** VVIP：緩衝結束後方可進場（ISO） */
@@ -48,6 +49,15 @@ export type TemporaryAccess = {
   recipientEmail?: string;
   /** 僅管理員：畫面顯示用香港時間區間文案 */
   displayRangeHkt?: string;
+=======
+  /** A/B 段識別，例如 A-2026-05-14 */
+  segmentKey?: string;
+  /** 該時段內共用的 QR 密鑰（與 id 不同） */
+  sharedSecret?: string;
+  createdAt?: string;
+  /** 管理員代訪客申請時的收件人 */
+  recipientEmail?: string;
+>>>>>>> Stashed changes
 };
 
 
