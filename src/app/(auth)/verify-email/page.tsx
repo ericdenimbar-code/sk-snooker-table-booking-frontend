@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { Loader2, MailCheck, MailWarning } from 'lucide-react';
@@ -10,7 +10,24 @@ import { verifySignupEmailToken } from '@/app/(auth)/actions';
 
 type VerifyState = 'loading' | 'success' | 'error';
 
-export default function VerifyEmailPage() {
+function VerifyEmailFallback() {
+    return (
+        <div className="min-h-screen flex items-center justify-center bg-background p-4">
+            <Card className="w-full max-w-md">
+                <CardHeader className="text-center">
+                    <CardTitle>電子郵件驗證</CardTitle>
+                    <CardDescription>完成帳戶啟用流程</CardDescription>
+                </CardHeader>
+                <CardContent className="text-center space-y-4">
+                    <Loader2 className="h-14 w-14 animate-spin text-primary mx-auto" />
+                    <p className="text-muted-foreground">正在驗證您的電子郵件，請稍候...</p>
+                </CardContent>
+            </Card>
+        </div>
+    );
+}
+
+function VerifyEmailContent() {
     const searchParams = useSearchParams();
     const [state, setState] = useState<VerifyState>('loading');
     const [message, setMessage] = useState('正在驗證您的電子郵件，請稍候...');
@@ -69,5 +86,13 @@ export default function VerifyEmailPage() {
                 </CardContent>
             </Card>
         </div>
+    );
+}
+
+export default function VerifyEmailPage() {
+    return (
+        <Suspense fallback={<VerifyEmailFallback />}>
+            <VerifyEmailContent />
+        </Suspense>
     );
 }
