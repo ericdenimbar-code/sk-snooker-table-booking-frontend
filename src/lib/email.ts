@@ -61,7 +61,7 @@ function signVerificationPayload(payload: EmailVerificationPayload): string {
     return `${encodedPayload}.${signature}`;
 }
 
-export function verifyEmailVerificationToken(token: string): { uid: string; email: string } {
+export async function verifyEmailVerificationToken(token: string): Promise<{ uid: string; email: string }> {
     if (!EMAIL_VERIFICATION_SECRET) {
         throw new Error('EMAIL_VERIFICATION_SECRET is not configured.');
     }

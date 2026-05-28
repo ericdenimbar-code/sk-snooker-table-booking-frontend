@@ -26,7 +26,7 @@ export async function verifySignupEmailToken(token: string): Promise<AuthActionR
     }
 
     try {
-        const { uid, email } = verifyEmailVerificationToken(token);
+        const { uid, email } = await verifyEmailVerificationToken(token);
         const userRecord = await auth.getUser(uid);
 
         if (userRecord.email !== email) {
