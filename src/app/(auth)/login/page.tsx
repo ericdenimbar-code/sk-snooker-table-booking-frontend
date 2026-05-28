@@ -11,7 +11,8 @@ import { useToast } from '@/hooks/use-toast';
 import { getUserByEmail } from '@/app/admin/users/actions';
 import { getRoomSettings } from '@/app/admin/settings/actions';
 import { auth } from '@/lib/firebase';
-import { signInWithEmailAndPassword, sendEmailVerification } from 'firebase/auth';
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { sendSignupVerificationEmail } from '@/app/(auth)/actions';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -98,7 +99,11 @@ export default function LoginPage() {
       );
 
       if (!userCredential.user.emailVerified) {
-        await sendEmailVerification(userCredential.user);
+        await sendSignupVerificationEmail({
+          uid: userCredential.user.uid,
+          email: values.email,
+        });
+        await signOut(auth);
         setEmailForVerification(values.email);
         setIsVerificationAlertOpen(true);
         setIsLoading(false);

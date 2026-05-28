@@ -13,8 +13,9 @@ import { Loader2, Eye, EyeOff, MailCheck, Building2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { getRoomSettings } from '@/app/admin/settings/actions';
 import { auth } from '@/lib/firebase';
-import { createUserWithEmailAndPassword, sendEmailVerification } from 'firebase/auth';
+import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { createUserInFirestore } from '@/app/admin/users/actions';
+import { sendSignupVerificationEmail } from '@/app/(auth)/actions';
 import { useRouter } from 'next/navigation';
 
 const signupSchema = z.object({
@@ -77,10 +78,7 @@ export default function SignupPage() {
       const userCredential = await createUserWithEmailAndPassword(auth, values.email, values.password);
       const user = userCredential.user;
 
-      // 2. Send verification email
-      await sendEmailVerification(user);
-
-      // 3. Create corresponding user document in Firestore
+      // 2. Create corresponding user document in Firestore
       const result = await createUserInFirestore({
         id: user.uid,
         email: values.email,
@@ -89,6 +87,14 @@ export default function SignupPage() {
       });
 
       if (result.success) {
+        const emailResult = await sendSignupVerificationEmail({
+          uid: user.uid,
+          email: values.email,
+          userName: values.name,
+        });
+        if (!emailResult.success) {
+          throw new Error(emailResult.error || '驗證郵件發送失敗。');
+        }
         setSubmittedEmail(values.email);
         setIsSubmitted(true);
       } else {
