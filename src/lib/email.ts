@@ -1,6 +1,3 @@
-
-'use server'
-
 import nodemailer from 'nodemailer';
 import type { Reservation } from '@/types';
 import type { ContactInfo } from '@/app/admin/settings/actions';
@@ -65,10 +62,12 @@ export async function verifyEmailVerificationToken(token: string): Promise<{ uid
     if (!EMAIL_VERIFICATION_SECRET) {
         throw new Error('EMAIL_VERIFICATION_SECRET is not configured.');
     }
-    const [encodedPayload, signature] = token.split('.');
-    if (!encodedPayload || !signature) {
+    const dotIndex = token.lastIndexOf('.');
+    if (dotIndex <= 0 || dotIndex === token.length - 1) {
         throw new Error('Invalid token format.');
     }
+    const encodedPayload = token.slice(0, dotIndex);
+    const signature = token.slice(dotIndex + 1);
     const expectedSignature = createHmac('sha256', EMAIL_VERIFICATION_SECRET).update(encodedPayload).digest('base64url');
     if (expectedSignature !== signature) {
         throw new Error('Invalid token signature.');
@@ -100,7 +99,7 @@ export async function sendCustomVerificationEmail(params: {
             email: params.email,
             exp: Date.now() + EMAIL_VERIFICATION_TTL_SECONDS * 1000,
         });
-        const verifyUrl = new URL('/verify-email', APP_BASE_URL);
+        const verifyUrl = new URL('/api/verify-email', APP_BASE_URL);
         verifyUrl.searchParams.set('token', token);
 
         const mailOptions = {

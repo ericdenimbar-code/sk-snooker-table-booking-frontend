@@ -24,6 +24,9 @@ export async function verifySignupEmailToken(token: string): Promise<AuthActionR
     if (!auth) {
         return { success: false, error: '驗證服務暫時不可用。' };
     }
+    if (!process.env.EMAIL_VERIFICATION_SECRET) {
+        return { success: false, error: 'EMAIL_VERIFICATION_SECRET 未設定，無法驗證郵件。' };
+    }
 
     try {
         const { uid, email } = await verifyEmailVerificationToken(token);

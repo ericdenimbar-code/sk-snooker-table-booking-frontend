@@ -128,24 +128,7 @@ export default function LoginPage() {
       let title = '登入失敗';
       let description = '您輸入的電子郵件或密碼不正確。';
 
-      if (authError.code === 'auth/invalid-credential') {
-        try {
-          const { createUserWithEmailAndPassword } = await import('firebase/auth');
-          await createUserWithEmailAndPassword(
-            auth,
-            values.email,
-            'a-deliberately-wrong-password-for-checking'
-          );
-        } catch (checkError: unknown) {
-          const checkAuthError = checkError as { code?: string };
-          if (checkAuthError.code === 'auth/email-already-in-use') {
-            setEmailForVerification(values.email);
-            setIsVerificationAlertOpen(true);
-            setIsLoading(false);
-            return;
-          }
-        }
-      } else if (authError.message) {
+      if (authError.message) {
         description = authError.message;
       }
 
