@@ -7,6 +7,8 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Terminal } from 'lucide-react';
 import { db } from '@/lib/firebase-admin';
 import Link from 'next/link';
+import { formatInTimeZone } from 'date-fns-tz';
+import { BLOCKED_SLOTS_COLLECTION, HKT } from '@/lib/blocked-slots';
 
 export default async function NewReservationPage() {
     // This server component no longer fetches all reservations.
@@ -48,12 +50,20 @@ export default async function NewReservationPage() {
     }
 
     // We now pass an empty array for initialReservations. The client will handle fetching.
+    const todayHkt = formatInTimeZone(new Date(), HKT, 'yyyy-MM-dd');
+    const blockedDoc = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(todayHkt).get();
+    const initialBlockedSlots: string[] = blockedDoc.exists()
+        ? (Array.isArray(blockedDoc.data()?.slots) ? blockedDoc.data()!.slots as string[] : [])
+        : [];
+
     return (
         <ReservationClientPage
             settings={room1Settings}
             room1Name={room1Settings.name}
             room2Name={room2Settings.name}
             initialReservations={[]}
+            initialBlockedSlots={initialBlockedSlots}
+            initialBlockedSlotsDate={todayHkt}
         />
     );
 }

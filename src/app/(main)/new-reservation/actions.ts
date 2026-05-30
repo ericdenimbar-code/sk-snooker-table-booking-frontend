@@ -44,6 +44,17 @@ async function getBlockedSlotsSetForDate(date: string): Promise<Set<string>> {
     return new Set(Array.isArray(slots) ? slots : []);
 }
 
+export async function getBlockedSlotsForDate(date: string): Promise<ServerActionResponse & { slots?: string[] }> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
+    try {
+        const slots = [...(await getBlockedSlotsSetForDate(date))];
+        return { success: true, slots };
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, error: `讀取預留時段失敗: ${msg}` };
+    }
+}
+
 async function assertBookingNotBlocked(
     date: string,
     startTime: string,
@@ -124,6 +135,10 @@ export async function unblockSlot(
 
     try {
         const ref = db.collection(BLOCKED_SLOTS_COLLECTION).doc(date);
+        const docSnap = await ref.get();
+        if (!docSnap.exists) {
+            return { success: true };
+        }
         await ref.update({ slots: admin.firestore.FieldValue.arrayRemove(slot) });
         revalidatePath('/new-reservation', 'page');
         return { success: true };

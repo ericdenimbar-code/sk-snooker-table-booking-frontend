@@ -24,8 +24,7 @@ import { adjustUserTokens, getUserByEmail } from '@/app/admin/users/actions';
 import { createReservation, getReservationsForDateRange, blockSlots, unblockSlot } from './actions';
 import { useCart, type CartItem } from '@/hooks/use-cart';
 import { useRouter } from 'next/navigation';
-import { doc, onSnapshot } from 'firebase/firestore';
-import { db as firestoreDb } from '@/lib/firebase';
+import { useBlockedSlotsSnapshot } from '@/hooks/use-blocked-slots-snapshot';
 import {
   dateToHktYmd,
   generateHalfHourSlots,
@@ -51,10 +50,19 @@ type ReservationClientPageProps = {
     settings: RoomSettings;
     room1Name: string;
     room2Name: string;
-    initialReservations: Reservation[]; // This will now be empty from the server
+    initialReservations: Reservation[];
+    initialBlockedSlots?: string[];
+    initialBlockedSlotsDate?: string;
 }
 
-export function ReservationClientPage({ settings, room1Name, room2Name, initialReservations }: ReservationClientPageProps) {
+export function ReservationClientPage({
+  settings,
+  room1Name,
+  room2Name,
+  initialReservations,
+  initialBlockedSlots = [],
+  initialBlockedSlotsDate,
+}: ReservationClientPageProps) {
   const { toast } = useToast();
   const router = useRouter();
   const { cart, addToCart } = useCart();
@@ -65,14 +73,21 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
   const [user, setUser] = useState<AppUser | null>(null);
   const [allReservations, setAllReservations] = useState<Reservation[]>(initialReservations);
   const [availability, setAvailability] = useState<Map<string, number>>(new Map());
-  const [blockedSlots, setBlockedSlots] = useState<Set<string>>(new Set());
   const [isBlocking, setIsBlocking] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
+  const [selectedSlots, setSelectedSlots] = useState<SelectedSlot[]>([]);
+
+  const ssrBlockedSlots =
+    selectedDate &&
+    initialBlockedSlotsDate &&
+    dateToHktYmd(selectedDate) === initialBlockedSlotsDate
+      ? initialBlockedSlots
+      : [];
+
+  const blockedSlots = useBlockedSlotsSnapshot(selectedDate, ssrBlockedSlots);
 
   const slotCostMap = useMemo(() => new Map(slotCostsData.map(s => [s.startTime, s.cost])), [slotCostsData]);
 
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
-  const [selectedSlots, setSelectedSlots] = useState<SelectedSlot[]>([]);
-  
   const [isMounted, setIsMounted] = useState(false);
   const slotRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const confirmationPanelRef = useRef<HTMLDivElement>(null);
@@ -154,31 +169,6 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
     return () => clearInterval(intervalId);
   }, [selectedDate, toast]);
 
-  useEffect(() => {
-    if (!selectedDate) return;
-
-    const dateStr = dateToHktYmd(selectedDate);
-    const docRef = doc(firestoreDb, 'blockedSlots', dateStr);
-
-    const unsubscribe = onSnapshot(
-      docRef,
-      (snapshot) => {
-        if (snapshot.exists()) {
-          const slots = snapshot.data()?.slots;
-          setBlockedSlots(new Set(Array.isArray(slots) ? slots : []));
-        } else {
-          setBlockedSlots(new Set());
-        }
-      },
-      (error) => {
-        console.error('blockedSlots onSnapshot error:', error);
-      },
-    );
-
-    return () => unsubscribe();
-  }, [selectedDate]);
-
-
   const timeSlots = useMemo(() => generateHalfHourSlots(), []);
 
   useEffect(() => {
@@ -220,15 +210,8 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
   const handleUnblockSlot = useCallback(async (dateStr: string, time: string) => {
     if (!user?.id) return;
 
-    setBlockedSlots((prev) => {
-      const next = new Set(prev);
-      next.delete(time);
-      return next;
-    });
-
     const result = await unblockSlot(user.id, dateStr, time);
     if (!result.success) {
-      setBlockedSlots((prev) => new Set([...prev, time]));
       toast({
         variant: 'destructive',
         title: '解除預留失敗',
@@ -353,24 +336,10 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
       return;
     }
 
-    const currentDateStr = selectedDate ? dateToHktYmd(selectedDate) : null;
-    const optimisticSlots = currentDateStr ? slotsByDateMap.get(currentDateStr) ?? [] : [];
-
     setIsBlocking(true);
-    setBlockedSlots((prev) => {
-      const next = new Set(prev);
-      optimisticSlots.forEach((t) => next.add(t));
-      return next;
-    });
-
     const result = await blockSlots(user.id, slotsByDate);
 
     if (!result.success) {
-      setBlockedSlots((prev) => {
-        const next = new Set(prev);
-        optimisticSlots.forEach((t) => next.delete(t));
-        return next;
-      });
       toast({
         variant: 'destructive',
         title: '預留失敗',
@@ -672,19 +641,34 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
     setIsSoloBooking(false);
   };
 
-  const renderSlotButton = (time: string) => {
-    if (!selectedDate) return null;
+  const getSlotStatus = useCallback((time: string) => {
+    if (!selectedDate) {
+      return {
+        isPast: false,
+        isFullyBooked: false,
+        isBlocked: false,
+        isSelected: false,
+        isDisabled: true,
+      };
+    }
 
     const dateStr = dateToHktYmd(selectedDate);
     const isPast = isMounted && isHalfHourSlotPastHkt(dateStr, time);
-    const slotAvailability = availability.get(time) || 0;
-    const isFullyBooked = slotAvailability >= 2;
+    const isFullyBooked = (availability.get(time) || 0) >= 2;
     const isBlocked = blockedSlots.has(time);
-    const isSelected = selectedSlots.some(slot => isSameDay(slot.date, selectedDate) && slot.time === time);
+    const isSelected = selectedSlots.some(
+      (slot) => isSameDay(slot.date, selectedDate) && slot.time === time,
+    );
 
     const isDisabled = isAdmin
       ? isPast
       : isPast || isFullyBooked || isBlocked;
+
+    return { isPast, isFullyBooked, isBlocked, isSelected, isDisabled };
+  }, [selectedDate, isMounted, availability, blockedSlots, selectedSlots, isAdmin]);
+
+  const renderSlotButton = (time: string) => {
+    const { isPast, isFullyBooked, isBlocked, isSelected, isDisabled } = getSlotStatus(time);
 
     let variant: 'default' | 'secondary' | 'outline' = 'outline';
     if (isSelected) {
@@ -695,11 +679,14 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
       variant = 'secondary';
     }
 
+    const showAdminBlocked = isAdmin && isBlocked && !isSelected;
+    const showUserUnavailable = !isAdmin && !isPast && (isFullyBooked || isBlocked) && !isSelected;
+
     const buttonClassName = cn(
       'h-auto py-1.5 w-full',
-      isAdmin && isBlocked && !isSelected && 'bg-yellow-400 hover:bg-yellow-500 text-yellow-950 border-yellow-500',
-      !isAdmin && (isFullyBooked || isBlocked) && !isPast && 'bg-gray-200 text-gray-500 border-gray-300',
-      isDisabled && !isBlocked && 'text-muted-foreground',
+      showAdminBlocked && 'bg-yellow-400 hover:bg-yellow-500 text-yellow-950 border-yellow-500',
+      showUserUnavailable && 'bg-gray-200 text-gray-500 border-gray-300 cursor-not-allowed',
+      isDisabled && !showAdminBlocked && !showUserUnavailable && 'text-muted-foreground cursor-not-allowed',
     );
     
     return (
