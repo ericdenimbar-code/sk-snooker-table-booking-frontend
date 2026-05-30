@@ -74,8 +74,11 @@ function adminHourEndLabel(hourStart: string): string {
 function isAdminHourSlotPast(selectedDate: Date, hourStart: string): boolean {
   const [y, mo, d] = format(selectedDate, 'yyyy-MM-dd').split('-').map(Number);
   const h = Number(hourStart.split(':')[0]);
-  const slotInst = fromZonedTime(new Date(y, mo - 1, d, h, 0, 0, 0), HKT);
-  return slotInst.getTime() < Date.now();
+  const slotEnd =
+    h + 1 >= 24
+      ? fromZonedTime(new Date(y, mo - 1, d + 1, 0, 0, 0, 0), HKT)
+      : fromZonedTime(new Date(y, mo - 1, d, h + 1, 0, 0, 0), HKT);
+  return slotEnd.getTime() <= Date.now();
 }
 
 export function TemporaryAccessClientPage() {
