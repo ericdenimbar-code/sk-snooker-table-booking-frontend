@@ -83,5 +83,10 @@ service cloud.firestore {
       allow read: if isAdmin();
       allow write: if false;
     }
+
+    match /blockedSlots/{dateId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
   }
 }

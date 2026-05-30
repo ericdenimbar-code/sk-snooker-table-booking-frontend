@@ -1,6 +1,11 @@
 
 import type { firestore } from 'firebase-admin';
 
+export type BlockedSlotsDoc = {
+  /** Blocked half-hour slots for this date, e.g. ["10:00", "10:30"] */
+  slots: string[];
+};
+
 export type Reservation = {
   id: string; // Ref number
   roomId: string;

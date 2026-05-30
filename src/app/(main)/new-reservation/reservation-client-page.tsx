@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { addDays, format, startOfToday, setHours, setMinutes, isBefore, isSameDay, subDays, eachDayOfInterval, differenceInDays, addWeeks } from 'date-fns';
+import { addDays, format, startOfToday, setHours, setMinutes, isSameDay, subDays, eachDayOfInterval, differenceInDays, addWeeks } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -21,9 +21,16 @@ import { Loader2, ShoppingCart, ArrowRight } from 'lucide-react';
 import type { RoomSettings } from '@/app/admin/settings/actions';
 import type { Reservation } from '@/types';
 import { adjustUserTokens, getUserByEmail } from '@/app/admin/users/actions';
-import { createReservation, getReservationsForDateRange } from './actions';
+import { createReservation, getReservationsForDateRange, blockSlots, unblockSlot } from './actions';
 import { useCart, type CartItem } from '@/hooks/use-cart';
 import { useRouter } from 'next/navigation';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db as firestoreDb } from '@/lib/firebase';
+import {
+  dateToHktYmd,
+  generateHalfHourSlots,
+  isHalfHourSlotPastHkt,
+} from '@/lib/blocked-slots';
 
 
 type SelectedSlot = {
@@ -58,6 +65,8 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
   const [user, setUser] = useState<AppUser | null>(null);
   const [allReservations, setAllReservations] = useState<Reservation[]>(initialReservations);
   const [availability, setAvailability] = useState<Map<string, number>>(new Map());
+  const [blockedSlots, setBlockedSlots] = useState<Set<string>>(new Set());
+  const [isBlocking, setIsBlocking] = useState(false);
 
   const slotCostMap = useMemo(() => new Map(slotCostsData.map(s => [s.startTime, s.cost])), [slotCostsData]);
 
@@ -77,20 +86,22 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
 
   const maxBookableDate = useMemo(() => {
     const today = startOfToday();
-    if (!user) return addDays(today, 6); // Default for non-logged-in/loading user
+    if (!user) return addDays(today, 6);
 
     switch (user.role.toLowerCase()) {
       case 'admin':
-        return addDays(today, 364); // 365 days
+        return addDays(today, 364);
       case 'vvip':
-        return addWeeks(today, 4); 
+        return addWeeks(today, 4);
       case 'vip':
         return addWeeks(today, 2);
       case 'user':
       default:
-        return addDays(today, 6); // 7 days
+        return addDays(today, 6);
     }
   }, [user]);
+
+  const isAdmin = useMemo(() => user?.role?.toLowerCase() === 'admin', [user]);
 
   useEffect(() => {
     setIsMounted(true);
@@ -143,15 +154,32 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
     return () => clearInterval(intervalId);
   }, [selectedDate, toast]);
 
+  useEffect(() => {
+    if (!selectedDate) return;
 
-  const timeSlots = useMemo(() =>
-    Array.from({ length: 48 }, (_, i) => {
-      const hours = Math.floor(i / 2);
-      const minutes = (i % 2) * 30;
-      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
-    }),
-    []
-  );
+    const dateStr = dateToHktYmd(selectedDate);
+    const docRef = doc(firestoreDb, 'blockedSlots', dateStr);
+
+    const unsubscribe = onSnapshot(
+      docRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const slots = snapshot.data()?.slots;
+          setBlockedSlots(new Set(Array.isArray(slots) ? slots : []));
+        } else {
+          setBlockedSlots(new Set());
+        }
+      },
+      (error) => {
+        console.error('blockedSlots onSnapshot error:', error);
+      },
+    );
+
+    return () => unsubscribe();
+  }, [selectedDate]);
+
+
+  const timeSlots = useMemo(() => generateHalfHourSlots(), []);
 
   useEffect(() => {
     if (!selectedDate) return;
@@ -189,15 +217,39 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
     setAvailability(newAvailability);
 }, [selectedDate, allReservations, timeSlots]);
 
+  const handleUnblockSlot = useCallback(async (dateStr: string, time: string) => {
+    if (!user?.id) return;
+
+    setBlockedSlots((prev) => {
+      const next = new Set(prev);
+      next.delete(time);
+      return next;
+    });
+
+    const result = await unblockSlot(user.id, dateStr, time);
+    if (!result.success) {
+      setBlockedSlots((prev) => new Set([...prev, time]));
+      toast({
+        variant: 'destructive',
+        title: '解除預留失敗',
+        description: result.error || '無法解除預留時段，請稍後再試。',
+      });
+    }
+  }, [user, toast]);
 
   const handleSlotClick = (time: string) => {
     if (!selectedDate || !isMounted) return;
 
-    const [hours, minutes] = time.split(':').map(Number);
-    const slotDateTime = setMinutes(setHours(new Date(selectedDate), hours), minutes);
+    const dateStr = dateToHktYmd(selectedDate);
+    const isBlocked = blockedSlots.has(time);
+
+    if (isAdmin && isBlocked) {
+      handleUnblockSlot(dateStr, time);
+      return;
+    }
 
     const slotAvailability = availability.get(time) || 0;
-    if (slotAvailability >= 2 || isBefore(slotDateTime, new Date())) {
+    if (isHalfHourSlotPastHkt(dateStr, time) || slotAvailability >= 2 || isBlocked) {
       return;
     }
 
@@ -247,11 +299,15 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
             
             for (let i = dayStartIndex; i <= dayEndIndex; i++) {
                 const currentSlotTime = timeSlots[i];
-                const [h, m] = currentSlotTime.split(':').map(Number);
-                const currentSlotDateTime = setMinutes(setHours(new Date(day), h), m);
+                const currentDateStr = dateToHktYmd(day);
 
                 const currentSlotAvailability = availability.get(currentSlotTime) || 0;
-                if (currentSlotAvailability >= 2 || isBefore(currentSlotDateTime, new Date())) {
+                const currentIsBlocked = isSameDay(day, selectedDate) && blockedSlots.has(currentSlotTime);
+                if (
+                  currentSlotAvailability >= 2 ||
+                  isHalfHourSlotPastHkt(currentDateStr, currentSlotTime) ||
+                  currentIsBlocked
+                ) {
                     hasConflict = true;
                     break;
                 }
@@ -279,6 +335,55 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
     });
   }, [selectedSlots]);
   
+  const handleBlockSlots = async () => {
+    if (!user?.id || sortedSlots.length === 0) return;
+
+    const slotsByDateMap = new Map<string, string[]>();
+    for (const slot of sortedSlots) {
+      const dateStr = dateToHktYmd(slot.date);
+      if (isHalfHourSlotPastHkt(dateStr, slot.time)) continue;
+      const existing = slotsByDateMap.get(dateStr) ?? [];
+      existing.push(slot.time);
+      slotsByDateMap.set(dateStr, existing);
+    }
+
+    const slotsByDate = Array.from(slotsByDateMap.entries()).map(([date, slots]) => ({ date, slots }));
+    if (slotsByDate.length === 0) {
+      toast({ variant: 'destructive', title: '無法預留', description: '所選時段均已過期。' });
+      return;
+    }
+
+    const currentDateStr = selectedDate ? dateToHktYmd(selectedDate) : null;
+    const optimisticSlots = currentDateStr ? slotsByDateMap.get(currentDateStr) ?? [] : [];
+
+    setIsBlocking(true);
+    setBlockedSlots((prev) => {
+      const next = new Set(prev);
+      optimisticSlots.forEach((t) => next.add(t));
+      return next;
+    });
+
+    const result = await blockSlots(user.id, slotsByDate);
+
+    if (!result.success) {
+      setBlockedSlots((prev) => {
+        const next = new Set(prev);
+        optimisticSlots.forEach((t) => next.delete(t));
+        return next;
+      });
+      toast({
+        variant: 'destructive',
+        title: '預留失敗',
+        description: result.error || '無法預留時段，請稍後再試。',
+      });
+    } else {
+      setSelectedSlots([]);
+      toast({ title: '時段已預留', description: '所選時段已成功預留，普通用戶將無法看見。' });
+    }
+
+    setIsBlocking(false);
+  };
+
   const totalCost = useMemo(() => {
     return sortedSlots.reduce((total, slot) => {
       return total + (slotCostMap.get(slot.time) || 0);
@@ -569,14 +674,33 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
 
   const renderSlotButton = (time: string) => {
     if (!selectedDate) return null;
-    const [hours, minutes] = time.split(':').map(Number);
-    
-    const isPast = isMounted && isBefore(setMinutes(setHours(new Date(selectedDate), hours), minutes), new Date());
+
+    const dateStr = dateToHktYmd(selectedDate);
+    const isPast = isMounted && isHalfHourSlotPastHkt(dateStr, time);
     const slotAvailability = availability.get(time) || 0;
-    const isDisabled = isPast || slotAvailability >= 2;
+    const isFullyBooked = slotAvailability >= 2;
+    const isBlocked = blockedSlots.has(time);
     const isSelected = selectedSlots.some(slot => isSameDay(slot.date, selectedDate) && slot.time === time);
 
-    const variant = isSelected ? 'default' : (isDisabled ? 'secondary' : 'outline');
+    const isDisabled = isAdmin
+      ? isPast
+      : isPast || isFullyBooked || isBlocked;
+
+    let variant: 'default' | 'secondary' | 'outline' = 'outline';
+    if (isSelected) {
+      variant = 'default';
+    } else if (isAdmin && isBlocked) {
+      variant = 'outline';
+    } else if (isDisabled) {
+      variant = 'secondary';
+    }
+
+    const buttonClassName = cn(
+      'h-auto py-1.5 w-full',
+      isAdmin && isBlocked && !isSelected && 'bg-yellow-400 hover:bg-yellow-500 text-yellow-950 border-yellow-500',
+      !isAdmin && (isFullyBooked || isBlocked) && !isPast && 'bg-gray-200 text-gray-500 border-gray-300',
+      isDisabled && !isBlocked && 'text-muted-foreground',
+    );
     
     return (
       <div
@@ -586,7 +710,7 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
           variant={variant}
           disabled={isDisabled}
           onClick={() => handleSlotClick(time)}
-          className={cn("h-auto py-1.5 w-full", isDisabled && "text-muted-foreground")}
+          className={buttonClassName}
         >
           <span className="font-normal">{time} - {getEndTime(time)}</span>
         </Button>
@@ -716,20 +840,33 @@ export function ReservationClientPage({ settings, room1Name, room2Name, initialR
                   </div>
               )}
 
-              <div className="flex flex-col sm:flex-row gap-2">
-                  <Button variant="outline" className="w-full" onClick={handleAddToCart}>
-                    <ShoppingCart className="mr-2 h-4 w-4" />
-                    加入購物車
-                  </Button>
-                  {cart.length > 0 ? (
-                     <Button className="w-full" onClick={handleAddToCartAndCheckout}>
-                        到購物車結算
-                        <ArrowRight className="ml-2 h-4 w-4" />
+              <div className="flex flex-col gap-2">
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <Button variant="outline" className="w-full" onClick={handleAddToCart}>
+                      <ShoppingCart className="mr-2 h-4 w-4" />
+                      加入購物車
                     </Button>
-                  ) : (
-                    <Button className="w-full" onClick={handleImmediateBooking} disabled={isSubmitting}>
-                        {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        立即預約
+                    {cart.length > 0 ? (
+                       <Button className="w-full" onClick={handleAddToCartAndCheckout}>
+                          到購物車結算
+                          <ArrowRight className="ml-2 h-4 w-4" />
+                      </Button>
+                    ) : (
+                      <Button className="w-full" onClick={handleImmediateBooking} disabled={isSubmitting}>
+                          {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                          立即預約
+                      </Button>
+                    )}
+                  </div>
+                  {isAdmin && (
+                    <Button
+                      variant="secondary"
+                      className="w-full bg-yellow-400 hover:bg-yellow-500 text-yellow-950"
+                      onClick={handleBlockSlots}
+                      disabled={isBlocking || isSubmitting}
+                    >
+                      {isBlocking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      預留時段
                     </Button>
                   )}
               </div>

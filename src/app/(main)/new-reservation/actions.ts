@@ -13,12 +13,125 @@ import { createTokenPurchaseRequest } from '@/app/admin/token-requests/actions';
 import { getRoomSettings, getHASettings, type RoomSettings } from '@/app/admin/settings/actions';
 import { unstable_cache as cache } from 'next/cache';
 import admin from 'firebase-admin';
+import {
+  BLOCKED_SLOTS_COLLECTION,
+  expandBookingToHalfHourKeys,
+  generateHalfHourSlots,
+  isValidHalfHourSlot,
+} from '@/lib/blocked-slots';
 
 type ServerActionResponse = {
     success: boolean;
     error?: string;
     [key: string]: any;
 };
+
+async function assertAdminUser(adminUserId: string): Promise<string | null> {
+    if (!db) return '後端資料庫未連接。';
+    const adminDoc = await db.collection('users').doc(adminUserId).get();
+    const role = adminDoc.data()?.role?.toLowerCase();
+    if (!adminDoc.exists || role !== 'admin') {
+        return '權限不足。';
+    }
+    return null;
+}
+
+async function getBlockedSlotsSetForDate(date: string): Promise<Set<string>> {
+    if (!db) return new Set();
+    const docSnap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+    if (!docSnap.exists) return new Set();
+    const slots = docSnap.data()?.slots;
+    return new Set(Array.isArray(slots) ? slots : []);
+}
+
+async function assertBookingNotBlocked(
+    date: string,
+    startTime: string,
+    endTime: string,
+): Promise<string | null> {
+    const keys = expandBookingToHalfHourKeys(date, startTime, endTime);
+    if (keys.length === 0) return null;
+
+    const datesToCheck = [...new Set(keys.map((k) => k.date))];
+    const blockedByDate = new Map<string, Set<string>>();
+    await Promise.all(
+        datesToCheck.map(async (d) => {
+            blockedByDate.set(d, await getBlockedSlotsSetForDate(d));
+        }),
+    );
+
+    for (const { date: slotDate, time } of keys) {
+        if (blockedByDate.get(slotDate)?.has(time)) {
+            return `時段 ${slotDate} ${time} 已被預留，無法預約。`;
+        }
+    }
+    return null;
+}
+
+export async function blockSlots(
+    adminUserId: string,
+    slotsByDate: { date: string; slots: string[] }[],
+): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
+
+    const authError = await assertAdminUser(adminUserId);
+    if (authError) return { success: false, error: authError };
+
+    const timeSlots = generateHalfHourSlots();
+    const batch = db.batch();
+    let hasWrites = false;
+
+    for (const { date, slots } of slotsByDate) {
+        const validSlots = [...new Set(slots.filter((s) => isValidHalfHourSlot(s, timeSlots)))];
+        if (validSlots.length === 0) continue;
+
+        const ref = db.collection(BLOCKED_SLOTS_COLLECTION).doc(date);
+        batch.set(
+            ref,
+            { slots: admin.firestore.FieldValue.arrayUnion(...validSlots) },
+            { merge: true },
+        );
+        hasWrites = true;
+    }
+
+    if (!hasWrites) {
+        return { success: false, error: '沒有有效的時段可預留。' };
+    }
+
+    try {
+        await batch.commit();
+        revalidatePath('/new-reservation', 'page');
+        return { success: true };
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, error: `預留時段失敗: ${msg}` };
+    }
+}
+
+export async function unblockSlot(
+    adminUserId: string,
+    date: string,
+    slot: string,
+): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
+
+    const authError = await assertAdminUser(adminUserId);
+    if (authError) return { success: false, error: authError };
+
+    if (!isValidHalfHourSlot(slot)) {
+        return { success: false, error: '無效的時段格式。' };
+    }
+
+    try {
+        const ref = db.collection(BLOCKED_SLOTS_COLLECTION).doc(date);
+        await ref.update({ slots: admin.firestore.FieldValue.arrayRemove(slot) });
+        revalidatePath('/new-reservation', 'page');
+        return { success: true };
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, error: `解除預留失敗: ${msg}` };
+    }
+}
 
 // --- Get all reservations from Firestore (for Admin pages) ---
 export async function getAllReservations(userEmail?: string): Promise<ServerActionResponse> {
@@ -83,6 +196,11 @@ export async function createReservation(
     if (!db) return { success: false, error: '後端資料庫未連接。' };
     if (data.roomId !== '1' && data.roomId !== '2') {
         return { success: false, error: '無效的房間 ID。' };
+    }
+
+    const blockedError = await assertBookingNotBlocked(data.date, data.startTime, data.endTime);
+    if (blockedError) {
+        return { success: false, error: blockedError };
     }
 
     const refNumber = `RR-${Date.now().toString().slice(-6)}`;
@@ -177,6 +295,15 @@ export async function createMultipleReservations(
             }
 
             for (const resData of reservationsData) {
+                const blockedError = await assertBookingNotBlocked(
+                    resData.date,
+                    resData.startTime,
+                    resData.endTime,
+                );
+                if (blockedError) {
+                    throw new Error(blockedError);
+                }
+
                 const potentialConflictsQuery = reservationsRef
                     .where('roomId', '==', resData.roomId)
                     .where('date', '==', resData.date);
@@ -265,6 +392,11 @@ export async function createPendingFpsReservation(
   data: Omit<Reservation, 'id' | 'bookingDate' | 'qrSecret' | 'paymentMethod'>
 ): Promise<ServerActionResponse> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
+
+    const blockedError = await assertBookingNotBlocked(data.date, data.startTime, data.endTime);
+    if (blockedError) {
+        return { success: false, error: blockedError };
+    }
     
     // Create a new reservation with 'Pending Fps Payment' status
     const newReservation: Omit<Reservation, 'id' | 'bookingDate' | 'qrSecret'> & { status: 'Pending Fps Payment'; expiresAt: admin.firestore.Timestamp } = {
