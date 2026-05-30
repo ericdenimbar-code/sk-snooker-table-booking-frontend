@@ -84,7 +84,8 @@ export function ReservationClientPage({
       ? initialBlockedSlots
       : [];
 
-  const blockedSlots = useBlockedSlotsSnapshot(selectedDate, ssrBlockedSlots);
+  const { dbBlockedSlots: blockedSlots, removeSlotOptimistic, addSlotOptimistic } =
+    useBlockedSlotsSnapshot(selectedDate, ssrBlockedSlots);
 
   const slotCostMap = useMemo(() => new Map(slotCostsData.map(s => [s.startTime, s.cost])), [slotCostsData]);
 
@@ -210,15 +211,18 @@ export function ReservationClientPage({
   const handleUnblockSlot = useCallback(async (dateStr: string, time: string) => {
     if (!user?.id) return;
 
+    removeSlotOptimistic(time);
+
     const result = await unblockSlot(user.id, dateStr, time);
     if (!result.success) {
+      addSlotOptimistic(time);
       toast({
         variant: 'destructive',
         title: '解除預留失敗',
         description: result.error || '無法解除預留時段，請稍後再試。',
       });
     }
-  }, [user, toast]);
+  }, [user, toast, removeSlotOptimistic, addSlotOptimistic]);
 
   const handleSlotClick = (time: string) => {
     if (!selectedDate || !isMounted) return;
