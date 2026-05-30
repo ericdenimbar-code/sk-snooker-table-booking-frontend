@@ -51,10 +51,15 @@ export default async function NewReservationPage() {
 
     // We now pass an empty array for initialReservations. The client will handle fetching.
     const todayHkt = formatInTimeZone(new Date(), HKT, 'yyyy-MM-dd');
-    const blockedDoc = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(todayHkt).get();
-    const initialBlockedSlots: string[] = blockedDoc.exists()
-        ? (Array.isArray(blockedDoc.data()?.slots) ? blockedDoc.data()!.slots as string[] : [])
-        : [];
+    let initialBlockedSlots: string[] = [];
+    try {
+        const blockedDoc = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(todayHkt).get();
+        initialBlockedSlots = blockedDoc.exists
+            ? (Array.isArray(blockedDoc.data()?.slots) ? blockedDoc.data()!.slots as string[] : [])
+            : [];
+    } catch (err) {
+        console.error('[new-reservation] Failed to load blockedSlots:', err);
+    }
 
     return (
         <ReservationClientPage
