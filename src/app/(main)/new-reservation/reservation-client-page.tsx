@@ -21,10 +21,12 @@ import { Loader2, ShoppingCart, ArrowRight } from 'lucide-react';
 import type { RoomSettings } from '@/app/admin/settings/actions';
 import type { Reservation } from '@/types';
 import { adjustUserTokens, getUserByEmail } from '@/app/admin/users/actions';
-import { createReservation, getReservationsForDateRange, blockSlots, unblockSlot } from './actions';
+import { createReservation, blockSlots, unblockSlot } from './actions';
 import { useCart, type CartItem } from '@/hooks/use-cart';
 import { useRouter } from 'next/navigation';
 import { useBlockedSlotsSnapshot } from '@/hooks/use-blocked-slots-snapshot';
+import { useReservationsForDate } from '@/hooks/use-reservations-snapshot';
+import { resolveSlotStatus } from '@/lib/slot-button-status';
 import {
   dateToHktYmd,
   generateHalfHourSlots,
@@ -71,7 +73,6 @@ export function ReservationClientPage({
   const { title, description, pricingTiers } = newReservationPage;
 
   const [user, setUser] = useState<AppUser | null>(null);
-  const [allReservations, setAllReservations] = useState<Reservation[]>(initialReservations);
   const [availability, setAvailability] = useState<Map<string, number>>(new Map());
   const [isBlocking, setIsBlocking] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
@@ -119,6 +120,8 @@ export function ReservationClientPage({
 
   const isAdmin = useMemo(() => user?.role?.toLowerCase() === 'admin', [user]);
 
+  const allReservations = useReservationsForDate(selectedDate, isAdmin, initialReservations);
+
   useEffect(() => {
     setIsMounted(true);
     
@@ -144,31 +147,6 @@ export function ReservationClientPage({
     window.addEventListener('userUpdated', updateUserState);
     return () => window.removeEventListener('userUpdated', updateUserState);
   }, []);
-
-  useEffect(() => {
-    if (!selectedDate) return;
-
-    const fetchReservations = async () => {
-        const dateStr = format(selectedDate, 'yyyy-MM-dd');
-        const result = await getReservationsForDateRange(dateStr);
-        if (result.success && result.reservations) {
-            setAllReservations(result.reservations);
-        } else {
-            console.error("Failed to fetch reservations:", result.error);
-            toast({
-                variant: 'destructive',
-                title: '讀取預訂失敗',
-                description: '無法獲取最新的預訂狀態，請稍後再試。'
-            });
-        }
-    };
-    
-    fetchReservations();
-    
-    const intervalId = setInterval(fetchReservations, 60000);
-
-    return () => clearInterval(intervalId);
-  }, [selectedDate, toast]);
 
   const timeSlots = useMemo(() => generateHalfHourSlots(), []);
 
@@ -580,8 +558,6 @@ export function ReservationClientPage({
     
     const newReservation = reservationResult.newReservation;
     
-    setAllReservations(prevReservations => [...prevReservations, newReservation]);
-    
     if (!isAdmin) {
       const newTokens = (user.tokens ?? 0) - details.finalCost;
       const updatedUser = { ...user, tokens: newTokens };
@@ -645,53 +621,24 @@ export function ReservationClientPage({
     setIsSoloBooking(false);
   };
 
-  const getSlotStatus = useCallback((time: string) => {
-    if (!selectedDate) {
-      return {
-        isPast: false,
-        isFullyBooked: false,
-        isBlocked: false,
-        isSelected: false,
-        isDisabled: true,
-      };
-    }
+  const renderSlotButton = (time: string) => {
+    if (!selectedDate) return null;
 
     const dateStr = dateToHktYmd(selectedDate);
-    const isPast = isMounted && isHalfHourSlotPastHkt(dateStr, time);
-    const isFullyBooked = (availability.get(time) || 0) >= 2;
+    const isExpired = isMounted && isHalfHourSlotPastHkt(dateStr, time);
+    const isFull = (availability.get(time) || 0) >= 2;
     const isBlocked = blockedSlots.has(time);
     const isSelected = selectedSlots.some(
       (slot) => isSameDay(slot.date, selectedDate) && slot.time === time,
     );
 
-    const isDisabled = isAdmin
-      ? isPast
-      : isPast || isFullyBooked || isBlocked;
-
-    return { isPast, isFullyBooked, isBlocked, isSelected, isDisabled };
-  }, [selectedDate, isMounted, availability, blockedSlots, selectedSlots, isAdmin]);
-
-  const renderSlotButton = (time: string) => {
-    const { isPast, isFullyBooked, isBlocked, isSelected, isDisabled } = getSlotStatus(time);
-
-    let variant: 'default' | 'secondary' | 'outline' = 'outline';
-    if (isSelected) {
-      variant = 'default';
-    } else if (isAdmin && isBlocked) {
-      variant = 'outline';
-    } else if (isDisabled) {
-      variant = 'secondary';
-    }
-
-    const showAdminBlocked = isAdmin && isBlocked && !isSelected;
-    const showUserUnavailable = !isAdmin && !isPast && (isFullyBooked || isBlocked) && !isSelected;
-
-    const buttonClassName = cn(
-      'h-auto py-1.5 w-full',
-      showAdminBlocked && 'bg-yellow-400 hover:bg-yellow-500 text-yellow-950 border-yellow-500',
-      showUserUnavailable && 'bg-gray-200 text-gray-500 border-gray-300 cursor-not-allowed',
-      isDisabled && !showAdminBlocked && !showUserUnavailable && 'text-muted-foreground cursor-not-allowed',
-    );
+    const { variant, className, isDisabled } = resolveSlotStatus({
+      isExpired,
+      isFull,
+      isBlocked,
+      isSelected,
+      isAdmin,
+    });
     
     return (
       <div
@@ -701,7 +648,7 @@ export function ReservationClientPage({
           variant={variant}
           disabled={isDisabled}
           onClick={() => handleSlotClick(time)}
-          className={buttonClassName}
+          className={className}
         >
           <span className="font-normal">{time} - {getEndTime(time)}</span>
         </Button>
