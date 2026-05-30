@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { format, subDays } from 'date-fns';
 import { onAuthStateChanged } from 'firebase/auth';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
@@ -20,17 +20,21 @@ function readLocalRoleForUid(uid: string): string | null {
   }
 }
 
-/**
- * Real-time reservations for the selected date.
- * Admin: onSnapshot on reservations collection.
- * User: server action fetch (Firestore rules only expose own bookings to clients).
- */
 export function useReservationsForDate(
   selectedDate: Date | undefined,
   isAdmin: boolean,
   initialReservations: Reservation[] = [],
-): Reservation[] {
+): { reservations: Reservation[]; refetchReservations: () => Promise<void> } {
   const [reservations, setReservations] = useState<Reservation[]>(initialReservations);
+
+  const refetchReservations = useCallback(async () => {
+    if (!selectedDate) return;
+    const dateStr = format(selectedDate, 'yyyy-MM-dd');
+    const result = await getReservationsForDateRange(dateStr);
+    if (result.success && result.reservations) {
+      setReservations(result.reservations);
+    }
+  }, [selectedDate]);
 
   useEffect(() => {
     if (!selectedDate) {
@@ -41,33 +45,18 @@ export function useReservationsForDate(
     const dateStr = format(selectedDate, 'yyyy-MM-dd');
     const prevDateStr = format(subDays(selectedDate, 1), 'yyyy-MM-dd');
     let unsubscribeSnapshot: (() => void) | undefined;
-    let pollInterval: ReturnType<typeof setInterval> | undefined;
     let cancelled = false;
 
-    const fetchViaServer = () => {
-      void getReservationsForDateRange(dateStr).then((result) => {
-        if (!cancelled && result.success && result.reservations) {
-          setReservations(result.reservations);
-        }
-      });
-    };
+    // Immediate fetch for all users — no auth wait
+    void refetchReservations();
 
-    const attachAdminSnapshot = async (uid: string) => {
-      try {
-        await auth.currentUser?.getIdToken();
-      } catch (err) {
-        console.warn('[reservations] getIdToken failed', err);
-        fetchViaServer();
-        return;
-      }
-
+    const attachAdminSnapshot = () => {
       if (cancelled) return;
-
+      unsubscribeSnapshot?.();
       const q = query(
         collection(db, 'reservations'),
         where('date', 'in', [dateStr, prevDateStr]),
       );
-
       unsubscribeSnapshot = onSnapshot(
         q,
         (snapshot) => {
@@ -76,38 +65,46 @@ export function useReservationsForDate(
         },
         (error) => {
           console.error('[reservations] onSnapshot error', error);
-          fetchViaServer();
+          void refetchReservations();
         },
       );
     };
 
-    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
-      unsubscribeSnapshot?.();
-      unsubscribeSnapshot = undefined;
-      if (pollInterval) {
-        clearInterval(pollInterval);
-        pollInterval = undefined;
-      }
+    const tryAdminSnapshot = async () => {
+      const firebaseUser = auth.currentUser;
+      if (!firebaseUser || !isAdmin) return;
+      const role = readLocalRoleForUid(firebaseUser.uid);
+      if (role?.toLowerCase() !== 'admin') return;
 
-      const role = firebaseUser ? readLocalRoleForUid(firebaseUser.uid) : null;
-      const admin = role?.toLowerCase() === 'admin';
-
-      if (firebaseUser && admin && isAdmin) {
-        void attachAdminSnapshot(firebaseUser.uid);
+      try {
+        await firebaseUser.getIdToken();
+      } catch (err) {
+        console.warn('[reservations] getIdToken failed', err);
         return;
       }
 
-      fetchViaServer();
-      pollInterval = setInterval(fetchViaServer, 60000);
+      attachAdminSnapshot();
+    };
+
+    if (auth.currentUser && isAdmin) {
+      void tryAdminSnapshot();
+    }
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
+      unsubscribeSnapshot?.();
+      unsubscribeSnapshot = undefined;
+
+      if (firebaseUser && isAdmin) {
+        void tryAdminSnapshot();
+      }
     });
 
     return () => {
       cancelled = true;
       unsubscribeAuth();
       unsubscribeSnapshot?.();
-      if (pollInterval) clearInterval(pollInterval);
     };
-  }, [selectedDate, isAdmin]);
+  }, [selectedDate, isAdmin, refetchReservations]);
 
-  return reservations;
+  return { reservations, refetchReservations };
 }

@@ -9,132 +9,58 @@ export type SlotStatusInput = {
 };
 
 export type SlotStatusResult = {
-  isExpired: boolean;
-  isFull: boolean;
-  isBlocked: boolean;
-  isSelected: boolean;
+  isGray: boolean;
   isDisabled: boolean;
   variant: 'default' | 'secondary' | 'outline';
   className: string;
 };
 
-/**
- * Unified slot status with Admin priority:
- * 1. blocked (yellow)  2. full (gray-200)  3. expired (gray-100)  4. available
- */
+const baseClass = 'h-auto py-1.5 w-full';
+const grayClass = cn(baseClass, 'bg-gray-200 text-gray-800 cursor-not-allowed');
+const availableClass = cn(baseClass, 'bg-white text-gray-900 hover:bg-green-50');
+const adminBlockedClass = cn(baseClass, 'bg-yellow-400 hover:bg-yellow-500 text-gray-900');
+
+/** Shared gray rule: full, blocked, or expired → unavailable */
+export function isSlotGray(isFull: boolean, isBlocked: boolean, isExpired: boolean): boolean {
+  return isFull || isBlocked || isExpired;
+}
+
 export function resolveSlotStatus(input: SlotStatusInput): SlotStatusResult {
   const { isExpired, isFull, isBlocked, isSelected, isAdmin } = input;
-
-  const isDisabled = isAdmin
-    ? isExpired || (isFull && !isBlocked)
-    : isExpired || isFull || isBlocked;
+  const isGray = isSlotGray(isFull, isBlocked, isExpired);
 
   if (isSelected) {
     return {
-      isExpired,
-      isFull,
-      isBlocked,
-      isSelected,
-      isDisabled,
+      isGray,
+      isDisabled: isGray,
       variant: 'default',
-      className: cn('h-auto py-1.5 w-full'),
+      className: baseClass,
     };
   }
 
-  if (isAdmin) {
-    if (isBlocked) {
-      return {
-        isExpired,
-        isFull,
-        isBlocked,
-        isSelected,
-        isDisabled: false,
-        variant: 'outline',
-        className: cn(
-          'h-auto py-1.5 w-full',
-          'bg-yellow-400 hover:bg-yellow-500 text-yellow-950 border-yellow-500',
-        ),
-      };
-    }
-    if (isFull) {
-      return {
-        isExpired,
-        isFull,
-        isBlocked,
-        isSelected,
-        isDisabled: true,
-        variant: 'secondary',
-        className: cn(
-          'h-auto py-1.5 w-full',
-          'bg-gray-200 text-gray-500 border-gray-300 cursor-not-allowed',
-        ),
-      };
-    }
-    if (isExpired) {
-      return {
-        isExpired,
-        isFull,
-        isBlocked,
-        isSelected,
-        isDisabled: true,
-        variant: 'secondary',
-        className: cn(
-          'h-auto py-1.5 w-full',
-          'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed',
-        ),
-      };
-    }
+  // Admin 預留：黃色、可點擊解除（唯一例外，不套用灰色）
+  if (isAdmin && isBlocked) {
     return {
-      isExpired,
-      isFull,
-      isBlocked,
-      isSelected,
+      isGray,
       isDisabled: false,
       variant: 'outline',
-      className: cn(
-        'h-auto py-1.5 w-full',
-        'border-primary/40 text-primary hover:bg-primary/5',
-      ),
+      className: adminBlockedClass,
     };
   }
 
-  // User端
-  if (!isExpired && (isFull || isBlocked)) {
+  if (isGray) {
     return {
-      isExpired,
-      isFull,
-      isBlocked,
-      isSelected,
+      isGray,
       isDisabled: true,
       variant: 'secondary',
-      className: cn(
-        'h-auto py-1.5 w-full',
-        'bg-gray-200 text-gray-500 border-gray-300 cursor-not-allowed',
-      ),
-    };
-  }
-  if (isExpired) {
-    return {
-      isExpired,
-      isFull,
-      isBlocked,
-      isSelected,
-      isDisabled: true,
-      variant: 'secondary',
-      className: cn(
-        'h-auto py-1.5 w-full',
-        'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed',
-      ),
+      className: grayClass,
     };
   }
 
   return {
-    isExpired,
-    isFull,
-    isBlocked,
-    isSelected,
+    isGray: false,
     isDisabled: false,
     variant: 'outline',
-    className: cn('h-auto py-1.5 w-full'),
+    className: availableClass,
   };
 }

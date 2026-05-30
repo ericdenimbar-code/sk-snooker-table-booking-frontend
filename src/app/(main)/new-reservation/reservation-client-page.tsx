@@ -4,7 +4,6 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { addDays, format, startOfToday, setHours, setMinutes, isSameDay, subDays, eachDayOfInterval, differenceInDays, addWeeks } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
 import { DateSelector } from '@/components/custom/date-selector';
 import {
   AlertDialog,
@@ -73,7 +72,6 @@ export function ReservationClientPage({
   const { title, description, pricingTiers } = newReservationPage;
 
   const [user, setUser] = useState<AppUser | null>(null);
-  const [availability, setAvailability] = useState<Map<string, number>>(new Map());
   const [isBlocking, setIsBlocking] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
   const [selectedSlots, setSelectedSlots] = useState<SelectedSlot[]>([]);
@@ -85,8 +83,13 @@ export function ReservationClientPage({
       ? initialBlockedSlots
       : [];
 
-  const { dbBlockedSlots: blockedSlots, removeSlotOptimistic, addSlotOptimistic } =
-    useBlockedSlotsSnapshot(selectedDate, ssrBlockedSlots);
+  const {
+    dbBlockedSlots: blockedSlots,
+    removeSlotOptimistic,
+    addSlotOptimistic,
+    addSlotsOptimistic,
+    refetchBlockedSlots,
+  } = useBlockedSlotsSnapshot(selectedDate, ssrBlockedSlots);
 
   const slotCostMap = useMemo(() => new Map(slotCostsData.map(s => [s.startTime, s.cost])), [slotCostsData]);
 
@@ -120,27 +123,70 @@ export function ReservationClientPage({
 
   const isAdmin = useMemo(() => user?.role?.toLowerCase() === 'admin', [user]);
 
-  const allReservations = useReservationsForDate(selectedDate, isAdmin, initialReservations);
+  const { reservations: allReservations, refetchReservations } = useReservationsForDate(
+    selectedDate,
+    isAdmin,
+    initialReservations,
+  );
+
+  const timeSlots = useMemo(() => generateHalfHourSlots(), []);
+
+  const availability = useMemo(() => {
+    if (!selectedDate) return new Map<string, number>();
+
+    const dateStr = format(selectedDate, 'yyyy-MM-dd');
+    const prevDateStr = format(subDays(selectedDate, 1), 'yyyy-MM-dd');
+    const newAvailability = new Map<string, number>();
+
+    const reservationsOnDate = allReservations.filter(
+      (res) =>
+        res.status !== 'Cancelled' &&
+        (res.date === dateStr || (res.endTime < res.startTime && res.date === prevDateStr)),
+    );
+
+    for (const time of timeSlots) {
+      const currentTimeIndex = timeSlots.indexOf(time);
+      let count = 0;
+
+      for (const res of reservationsOnDate) {
+        const startTimeIndex = timeSlots.indexOf(res.startTime);
+        const endTimeIndex = timeSlots.indexOf(res.endTime);
+
+        if (endTimeIndex > startTimeIndex) {
+          if (res.date === dateStr && currentTimeIndex >= startTimeIndex && currentTimeIndex < endTimeIndex) {
+            count++;
+          }
+        } else if (endTimeIndex < startTimeIndex) {
+          if (res.date === prevDateStr && currentTimeIndex < endTimeIndex) count++;
+          if (res.date === dateStr && currentTimeIndex >= startTimeIndex) count++;
+        }
+      }
+
+      newAvailability.set(time, count);
+    }
+
+    return newAvailability;
+  }, [selectedDate, allReservations, timeSlots]);
 
   useEffect(() => {
     setIsMounted(true);
-    
+
     const updateUserState = async () => {
-        const userDataString = localStorage.getItem('user');
-        if (userDataString) {
-            try {
-                const parsedUser: AppUser = JSON.parse(userDataString);
-                const latestUser = await getUserByEmail(parsedUser.email);
-                if (latestUser) {
-                  setUser(latestUser);
-                  localStorage.setItem('user', JSON.stringify(latestUser));
-                } else {
-                  setUser(parsedUser);
-                }
-            } catch (error) {
-                console.error('Failed to parse or fetch user data:', error);
-            }
+      const userDataString = localStorage.getItem('user');
+      if (userDataString) {
+        try {
+          const parsedUser: AppUser = JSON.parse(userDataString);
+          const latestUser = await getUserByEmail(parsedUser.email);
+          if (latestUser) {
+            setUser(latestUser);
+            localStorage.setItem('user', JSON.stringify(latestUser));
+          } else {
+            setUser(parsedUser);
+          }
+        } catch (error) {
+          console.error('Failed to parse or fetch user data:', error);
         }
+      }
     };
 
     updateUserState();
@@ -148,43 +194,10 @@ export function ReservationClientPage({
     return () => window.removeEventListener('userUpdated', updateUserState);
   }, []);
 
-  const timeSlots = useMemo(() => generateHalfHourSlots(), []);
-
-  useEffect(() => {
-    if (!selectedDate) return;
-
-    const dateStr = format(selectedDate, 'yyyy-MM-dd');
-    const newAvailability = new Map<string, number>();
-
-    const reservationsOnDate = allReservations.filter(res => 
-        res.status !== 'Cancelled' &&
-        (res.date === dateStr || (res.endTime < res.startTime && res.date === format(subDays(selectedDate, 1), 'yyyy-MM-dd')))
-    );
-    
-    timeSlots.forEach(time => {
-        const bookingsInSlot = reservationsOnDate.filter(res => {
-            const startTimeIndex = timeSlots.indexOf(res.startTime);
-            const endTimeIndex = timeSlots.indexOf(res.endTime);
-            const currentTimeIndex = timeSlots.indexOf(time);
-
-            if (endTimeIndex > startTimeIndex) {
-                return res.date === dateStr && currentTimeIndex >= startTimeIndex && currentTimeIndex < endTimeIndex;
-            }
-            else if (endTimeIndex < startTimeIndex) {
-                if (res.date === format(subDays(selectedDate, 1), 'yyyy-MM-dd')) {
-                    return currentTimeIndex < endTimeIndex;
-                }
-                if (res.date === dateStr) {
-                    return currentTimeIndex >= startTimeIndex;
-                }
-            }
-            return false;
-        });
-        newAvailability.set(time, bookingsInSlot.length);
-    });
-
-    setAvailability(newAvailability);
-}, [selectedDate, allReservations, timeSlots]);
+  const refreshAfterBlockChange = useCallback(async () => {
+    await Promise.all([refetchBlockedSlots(), refetchReservations()]);
+    router.refresh();
+  }, [refetchBlockedSlots, refetchReservations, router]);
 
   const handleUnblockSlot = useCallback(async (dateStr: string, time: string) => {
     if (!user?.id) return;
@@ -199,8 +212,10 @@ export function ReservationClientPage({
         title: '解除預留失敗',
         description: result.error || '無法解除預留時段，請稍後再試。',
       });
+    } else {
+      await refreshAfterBlockChange();
     }
-  }, [user, toast, removeSlotOptimistic, addSlotOptimistic]);
+  }, [user, toast, removeSlotOptimistic, addSlotOptimistic, refreshAfterBlockChange]);
 
   const handleSlotClick = (time: string) => {
     if (!selectedDate || !isMounted) return;
@@ -318,10 +333,19 @@ export function ReservationClientPage({
       return;
     }
 
+    const currentDateStr = selectedDate ? dateToHktYmd(selectedDate) : null;
+    const optimisticForToday =
+      currentDateStr ? (slotsByDateMap.get(currentDateStr) ?? []) : [];
+
     setIsBlocking(true);
+    if (optimisticForToday.length > 0) {
+      addSlotsOptimistic(optimisticForToday);
+    }
+
     const result = await blockSlots(user.id, slotsByDate);
 
     if (!result.success) {
+      optimisticForToday.forEach((t) => removeSlotOptimistic(t));
       toast({
         variant: 'destructive',
         title: '預留失敗',
@@ -330,6 +354,7 @@ export function ReservationClientPage({
     } else {
       setSelectedSlots([]);
       toast({ title: '時段已預留', description: '所選時段已成功預留，普通用戶將無法看見。' });
+      await refreshAfterBlockChange();
     }
 
     setIsBlocking(false);
@@ -798,8 +823,8 @@ export function ReservationClientPage({
                   </div>
                   {isAdmin && (
                     <Button
-                      variant="secondary"
-                      className="w-full bg-yellow-400 hover:bg-yellow-500 text-yellow-950"
+                      variant="outline"
+                      className="w-full bg-yellow-400 hover:bg-yellow-500 text-gray-900"
                       onClick={handleBlockSlots}
                       disabled={isBlocking || isSubmitting}
                     >
