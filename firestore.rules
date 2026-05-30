@@ -85,7 +85,8 @@ service cloud.firestore {
     }
 
     match /blockedSlots/{dateId} {
-      allow read: if isSignedIn();
+      // 僅含時段字串，無個資；允許所有客戶端即時監聽以同步預留狀態
+      allow read: if true;
       allow write: if false;
     }
   }

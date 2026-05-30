@@ -1,14 +1,24 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { onAuthStateChanged } from 'firebase/auth';
 import { doc, onSnapshot } from 'firebase/firestore';
-import { auth, db } from '@/lib/firebase';
+import { db } from '@/lib/firebase';
 import { BLOCKED_SLOTS_COLLECTION, dateToHktYmd } from '@/lib/blocked-slots';
 import { getBlockedSlotsForDate } from '@/app/(main)/new-reservation/actions';
 
+/** Server poll when Firestore listener is slow or unavailable */
+const BLOCKED_SLOTS_POLL_MS = 10_000;
+
 function toSlotSet(slots: string[] | undefined): Set<string> {
   return new Set(Array.isArray(slots) ? slots : []);
+}
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) {
+    if (!b.has(v)) return false;
+  }
+  return true;
 }
 
 export type BlockedSlotsSnapshot = {
@@ -31,7 +41,8 @@ export function useBlockedSlotsSnapshot(
     const dateStr = dateToHktYmd(selectedDate);
     const result = await getBlockedSlotsForDate(dateStr);
     if (result.success) {
-      setDbBlockedSlots(toSlotSet(result.slots));
+      const next = toSlotSet(result.slots);
+      setDbBlockedSlots((prev) => (setsEqual(prev, next) ? prev : next));
     }
   }, [selectedDate]);
 
@@ -60,6 +71,7 @@ export function useBlockedSlotsSnapshot(
 
     const dateStr = dateToHktYmd(selectedDate);
     let unsubscribeSnapshot: (() => void) | undefined;
+    let pollInterval: ReturnType<typeof setInterval> | undefined;
     let cancelled = false;
 
     if (prevDateRef.current !== null && prevDateRef.current !== dateStr) {
@@ -67,55 +79,46 @@ export function useBlockedSlotsSnapshot(
     }
     prevDateRef.current = dateStr;
 
-    // Immediate fetch — don't wait for auth callback
+    const applySlotsFromFirestore = (slots: unknown) => {
+      if (cancelled) return;
+      const next = toSlotSet(Array.isArray(slots) ? (slots as string[]) : undefined);
+      setDbBlockedSlots((prev) => (setsEqual(prev, next) ? prev : next));
+    };
+
+    // Immediate server fetch — works even without Firebase Auth
     void refetchBlockedSlots();
 
-    const attachSnapshot = () => {
-      if (cancelled) return;
-      unsubscribeSnapshot?.();
-      const docRef = doc(db, BLOCKED_SLOTS_COLLECTION, dateStr);
-      unsubscribeSnapshot = onSnapshot(
-        docRef,
-        (snap) => {
-          if (cancelled) return;
-          const slots = snap.exists() ? snap.data()?.slots : [];
-          setDbBlockedSlots(toSlotSet(Array.isArray(slots) ? slots : undefined));
-        },
-        (error) => {
-          console.error('[blockedSlots] onSnapshot error', error);
-        },
-      );
-    };
+    const docRef = doc(db, BLOCKED_SLOTS_COLLECTION, dateStr);
+    unsubscribeSnapshot = onSnapshot(
+      docRef,
+      (snap) => {
+        const slots = snap.exists() ? snap.data()?.slots : [];
+        applySlotsFromFirestore(slots);
+      },
+      (error) => {
+        console.error('[blockedSlots] onSnapshot error', error);
+        void refetchBlockedSlots();
+      },
+    );
 
-    const tryAttach = async (firebaseUser: NonNullable<typeof auth.currentUser>) => {
-      try {
-        await firebaseUser.getIdToken();
-      } catch (err) {
-        console.warn('[blockedSlots] getIdToken failed', err);
-        return;
+    pollInterval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refetchBlockedSlots();
       }
-      attachSnapshot();
-    };
+    }, BLOCKED_SLOTS_POLL_MS);
 
-    if (auth.currentUser) {
-      void tryAttach(auth.currentUser);
-    }
-
-    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
-      unsubscribeSnapshot?.();
-      unsubscribeSnapshot = undefined;
-
-      if (!firebaseUser) {
-        return;
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void refetchBlockedSlots();
       }
-
-      void tryAttach(firebaseUser);
-    });
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
       cancelled = true;
-      unsubscribeAuth();
       unsubscribeSnapshot?.();
+      if (pollInterval) clearInterval(pollInterval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [selectedDate, refetchBlockedSlots]);
 
