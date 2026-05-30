@@ -20,7 +20,7 @@ import { Loader2, ShoppingCart, ArrowRight } from 'lucide-react';
 import type { RoomSettings } from '@/app/admin/settings/actions';
 import type { Reservation } from '@/types';
 import { adjustUserTokens, getUserByEmail } from '@/app/admin/users/actions';
-import { createReservation, blockSlots, unblockSlot } from './actions';
+import { createReservation, applyBlockedSlotChanges } from './actions';
 import { useCart, type CartItem } from '@/hooks/use-cart';
 import { useRouter } from 'next/navigation';
 import { useBlockedSlotsSnapshot } from '@/hooks/use-blocked-slots-snapshot';
@@ -72,9 +72,9 @@ export function ReservationClientPage({
   const { title, description, pricingTiers } = newReservationPage;
 
   const [user, setUser] = useState<AppUser | null>(null);
-  const [isBlocking, setIsBlocking] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
   const [selectedSlots, setSelectedSlots] = useState<SelectedSlot[]>([]);
+  const [isApplyingBlockChanges, setIsApplyingBlockChanges] = useState(false);
 
   const ssrBlockedSlots =
     selectedDate &&
@@ -85,9 +85,6 @@ export function ReservationClientPage({
 
   const {
     dbBlockedSlots: blockedSlots,
-    removeSlotOptimistic,
-    addSlotOptimistic,
-    addSlotsOptimistic,
     refetchBlockedSlots,
   } = useBlockedSlotsSnapshot(selectedDate, ssrBlockedSlots);
 
@@ -103,6 +100,8 @@ export function ReservationClientPage({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [isSoloBooking, setIsSoloBooking] = useState(false);
+  const [pendingBlockAdds, setPendingBlockAdds] = useState<Map<string, Set<string>>>(new Map());
+  const [pendingBlockRemoves, setPendingBlockRemoves] = useState<Map<string, Set<string>>>(new Map());
 
   const maxBookableDate = useMemo(() => {
     const today = startOfToday();
@@ -168,6 +167,41 @@ export function ReservationClientPage({
     return newAvailability;
   }, [selectedDate, allReservations, timeSlots]);
 
+  const pendingBlockChangeCount = useMemo(() => {
+    let count = 0;
+    pendingBlockAdds.forEach((set) => { count += set.size; });
+    pendingBlockRemoves.forEach((set) => { count += set.size; });
+    return count;
+  }, [pendingBlockAdds, pendingBlockRemoves]);
+
+  const hasPendingBlockChanges = pendingBlockChangeCount > 0;
+
+  const updatePendingMap = useCallback((
+    setter: React.Dispatch<React.SetStateAction<Map<string, Set<string>>>>,
+    date: string,
+    time: string,
+    shouldAdd: boolean,
+  ) => {
+    setter((prev) => {
+      const next = new Map(prev);
+      const slotSet = new Set(next.get(date) ?? []);
+      if (shouldAdd) slotSet.add(time);
+      else slotSet.delete(time);
+      if (slotSet.size === 0) next.delete(date);
+      else next.set(date, slotSet);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    setPendingBlockAdds(new Map());
+    setPendingBlockRemoves(new Map());
+  }, [selectedDate]);
+
+  useEffect(() => {
+    void refetchReservations();
+  }, [blockedSlots, refetchReservations]);
+
   useEffect(() => {
     setIsMounted(true);
 
@@ -199,37 +233,36 @@ export function ReservationClientPage({
     router.refresh();
   }, [refetchBlockedSlots, refetchReservations, router]);
 
-  const handleUnblockSlot = useCallback(async (dateStr: string, time: string) => {
-    if (!user?.id) return;
+  const togglePendingBlockChange = useCallback((dateStr: string, time: string) => {
+    const inDb = blockedSlots.has(time);
+    const pendingAdd = pendingBlockAdds.get(dateStr)?.has(time) ?? false;
+    const pendingRemove = pendingBlockRemoves.get(dateStr)?.has(time) ?? false;
 
-    removeSlotOptimistic(time);
-
-    const result = await unblockSlot(user.id, dateStr, time);
-    if (!result.success) {
-      addSlotOptimistic(time);
-      toast({
-        variant: 'destructive',
-        title: '解除預留失敗',
-        description: result.error || '無法解除預留時段，請稍後再試。',
-      });
-    } else {
-      await refreshAfterBlockChange();
+    if (pendingAdd) {
+      updatePendingMap(setPendingBlockAdds, dateStr, time, false);
+    } else if (pendingRemove) {
+      updatePendingMap(setPendingBlockRemoves, dateStr, time, false);
+    } else if (inDb) {
+      updatePendingMap(setPendingBlockRemoves, dateStr, time, true);
     }
-  }, [user, toast, removeSlotOptimistic, addSlotOptimistic, refreshAfterBlockChange]);
+  }, [blockedSlots, pendingBlockAdds, pendingBlockRemoves, updatePendingMap]);
 
   const handleSlotClick = (time: string) => {
     if (!selectedDate || !isMounted) return;
 
     const dateStr = dateToHktYmd(selectedDate);
-    const isBlocked = blockedSlots.has(time);
+    const inDb = blockedSlots.has(time);
+    const pendingAdd = pendingBlockAdds.get(dateStr)?.has(time) ?? false;
+    const pendingRemove = pendingBlockRemoves.get(dateStr)?.has(time) ?? false;
+    const isEffectivelyBlocked = (inDb && !pendingRemove) || pendingAdd;
 
-    if (isAdmin && isBlocked) {
-      handleUnblockSlot(dateStr, time);
+    if (isAdmin && (isEffectivelyBlocked || pendingRemove)) {
+      togglePendingBlockChange(dateStr, time);
       return;
     }
 
     const slotAvailability = availability.get(time) || 0;
-    if (isHalfHourSlotPastHkt(dateStr, time) || slotAvailability >= 2 || isBlocked) {
+    if (isHalfHourSlotPastHkt(dateStr, time) || slotAvailability >= 2 || isEffectivelyBlocked) {
       return;
     }
 
@@ -282,7 +315,9 @@ export function ReservationClientPage({
                 const currentDateStr = dateToHktYmd(day);
 
                 const currentSlotAvailability = availability.get(currentSlotTime) || 0;
-                const currentIsBlocked = isSameDay(day, selectedDate) && blockedSlots.has(currentSlotTime);
+                const currentIsBlocked =
+                  (isSameDay(day, selectedDate) && blockedSlots.has(currentSlotTime) && !pendingBlockRemoves.get(dateToHktYmd(selectedDate))?.has(currentSlotTime))
+                  || (isSameDay(day, selectedDate) && (pendingBlockAdds.get(dateToHktYmd(selectedDate))?.has(currentSlotTime) ?? false));
                 if (
                   currentSlotAvailability >= 2 ||
                   isHalfHourSlotPastHkt(currentDateStr, currentSlotTime) ||
@@ -315,49 +350,64 @@ export function ReservationClientPage({
     });
   }, [selectedSlots]);
   
-  const handleBlockSlots = async () => {
-    if (!user?.id || sortedSlots.length === 0) return;
+  const stageSlotsForBlock = () => {
+    if (sortedSlots.length === 0) return;
 
-    const slotsByDateMap = new Map<string, string[]>();
+    let staged = 0;
     for (const slot of sortedSlots) {
       const dateStr = dateToHktYmd(slot.date);
       if (isHalfHourSlotPastHkt(dateStr, slot.time)) continue;
-      const existing = slotsByDateMap.get(dateStr) ?? [];
-      existing.push(slot.time);
-      slotsByDateMap.set(dateStr, existing);
+      if ((availability.get(slot.time) || 0) >= 2) continue;
+
+      const inDb = blockedSlots.has(slot.time);
+      const alreadyPending = pendingBlockAdds.get(dateStr)?.has(slot.time);
+      const pendingRemove = pendingBlockRemoves.get(dateStr)?.has(slot.time);
+      if ((inDb && !pendingRemove) || alreadyPending) continue;
+
+      updatePendingMap(setPendingBlockAdds, dateStr, slot.time, true);
+      staged++;
     }
 
-    const slotsByDate = Array.from(slotsByDateMap.entries()).map(([date, slots]) => ({ date, slots }));
-    if (slotsByDate.length === 0) {
-      toast({ variant: 'destructive', title: '無法預留', description: '所選時段均已過期。' });
+    if (staged === 0) {
+      toast({ variant: 'destructive', title: '無法預留', description: '所選時段不可用或已在待更新清單中。' });
       return;
     }
 
-    const currentDateStr = selectedDate ? dateToHktYmd(selectedDate) : null;
-    const optimisticForToday =
-      currentDateStr ? (slotsByDateMap.get(currentDateStr) ?? []) : [];
+    setSelectedSlots([]);
+    toast({ title: '已加入待預留清單', description: '請按「確定更新狀態」以同步至系統。' });
+  };
 
-    setIsBlocking(true);
-    if (optimisticForToday.length > 0) {
-      addSlotsOptimistic(optimisticForToday);
-    }
+  const handleConfirmBlockChanges = async () => {
+    if (!user?.id || !hasPendingBlockChanges) return;
 
-    const result = await blockSlots(user.id, slotsByDate);
+    const dates = new Set<string>([
+      ...pendingBlockAdds.keys(),
+      ...pendingBlockRemoves.keys(),
+    ]);
+
+    const changes = Array.from(dates).map((date) => ({
+      date,
+      toAdd: [...(pendingBlockAdds.get(date) ?? [])],
+      toRemove: [...(pendingBlockRemoves.get(date) ?? [])],
+    }));
+
+    setIsApplyingBlockChanges(true);
+    const result = await applyBlockedSlotChanges(user.id, changes);
 
     if (!result.success) {
-      optimisticForToday.forEach((t) => removeSlotOptimistic(t));
       toast({
         variant: 'destructive',
-        title: '預留失敗',
-        description: result.error || '無法預留時段，請稍後再試。',
+        title: '更新失敗',
+        description: result.error || '無法更新預留狀態，請稍後再試。',
       });
     } else {
-      setSelectedSlots([]);
-      toast({ title: '時段已預留', description: '所選時段已成功預留，普通用戶將無法看見。' });
+      setPendingBlockAdds(new Map());
+      setPendingBlockRemoves(new Map());
+      toast({ title: '預留狀態已更新', description: '變更已同步，用戶端將即時收到更新。' });
       await refreshAfterBlockChange();
     }
 
-    setIsBlocking(false);
+    setIsApplyingBlockChanges(false);
   };
 
   const totalCost = useMemo(() => {
@@ -652,7 +702,10 @@ export function ReservationClientPage({
     const dateStr = dateToHktYmd(selectedDate);
     const isExpired = isMounted && isHalfHourSlotPastHkt(dateStr, time);
     const isFull = (availability.get(time) || 0) >= 2;
-    const isBlocked = blockedSlots.has(time);
+    const inDb = blockedSlots.has(time);
+    const isPendingBlockAdd = pendingBlockAdds.get(dateStr)?.has(time) ?? false;
+    const isPendingBlockRemove = pendingBlockRemoves.get(dateStr)?.has(time) ?? false;
+    const isBlocked = (inDb && !isPendingBlockRemove) || isPendingBlockAdd;
     const isSelected = selectedSlots.some(
       (slot) => isSameDay(slot.date, selectedDate) && slot.time === time,
     );
@@ -663,11 +716,14 @@ export function ReservationClientPage({
       isBlocked,
       isSelected,
       isAdmin,
+      isPendingBlockAdd,
+      isPendingBlockRemove,
     });
     
     return (
       <div
         ref={(el) => { if (el) slotRefs.current.set(time, el); else slotRefs.current.delete(time); }}
+        className={isFull && !isAdmin ? 'pointer-events-none' : undefined}
       >
         <Button
           variant={variant}
@@ -741,6 +797,30 @@ export function ReservationClientPage({
               <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                   {timeSlots.map(time => renderSlotButton(time))}
               </div>
+              {isAdmin && (
+                <div className="flex flex-col sm:flex-row gap-2 mt-4">
+                  <Button
+                    variant="outline"
+                    className="w-full bg-yellow-400 hover:bg-yellow-500 text-gray-900"
+                    onClick={stageSlotsForBlock}
+                    disabled={sortedSlots.length === 0 || isApplyingBlockChanges}
+                  >
+                    預留時段
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={handleConfirmBlockChanges}
+                    disabled={!hasPendingBlockChanges || isApplyingBlockChanges}
+                  >
+                    {isApplyingBlockChanges && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    確定更新狀態
+                    {hasPendingBlockChanges && (
+                      <span className="ml-1 text-xs">({pendingBlockChangeCount})</span>
+                    )}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </CardContent>
@@ -821,17 +901,6 @@ export function ReservationClientPage({
                       </Button>
                     )}
                   </div>
-                  {isAdmin && (
-                    <Button
-                      variant="outline"
-                      className="w-full bg-yellow-400 hover:bg-yellow-500 text-gray-900"
-                      onClick={handleBlockSlots}
-                      disabled={isBlocking || isSubmitting}
-                    >
-                      {isBlocking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      預留時段
-                    </Button>
-                  )}
               </div>
           </CardContent>
         </Card>

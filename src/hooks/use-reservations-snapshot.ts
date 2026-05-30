@@ -45,10 +45,15 @@ export function useReservationsForDate(
     const dateStr = format(selectedDate, 'yyyy-MM-dd');
     const prevDateStr = format(subDays(selectedDate, 1), 'yyyy-MM-dd');
     let unsubscribeSnapshot: (() => void) | undefined;
+    let pollInterval: ReturnType<typeof setInterval> | undefined;
     let cancelled = false;
 
     // Immediate fetch for all users — no auth wait
     void refetchReservations();
+
+    pollInterval = setInterval(() => {
+      void refetchReservations();
+    }, 15000);
 
     const attachAdminSnapshot = () => {
       if (cancelled) return;
@@ -103,6 +108,7 @@ export function useReservationsForDate(
       cancelled = true;
       unsubscribeAuth();
       unsubscribeSnapshot?.();
+      if (pollInterval) clearInterval(pollInterval);
     };
   }, [selectedDate, isAdmin, refetchReservations]);
 

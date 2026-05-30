@@ -19,6 +19,7 @@ import {
   generateHalfHourSlots,
   isValidHalfHourSlot,
 } from '@/lib/blocked-slots';
+import { assertBookingAllowed, BOOKING_CONFLICT_MSG } from '@/lib/booking-validation';
 
 type ServerActionResponse = {
     success: boolean;
@@ -73,10 +74,64 @@ async function assertBookingNotBlocked(
 
     for (const { date: slotDate, time } of keys) {
         if (blockedByDate.get(slotDate)?.has(time)) {
-            return `時段 ${slotDate} ${time} 已被預留，無法預約。`;
+            return BOOKING_CONFLICT_MSG;
         }
     }
     return null;
+}
+
+export async function applyBlockedSlotChanges(
+    adminUserId: string,
+    changes: { date: string; toAdd: string[]; toRemove: string[] }[],
+): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
+
+    const authError = await assertAdminUser(adminUserId);
+    if (authError) return { success: false, error: authError };
+
+    const timeSlots = generateHalfHourSlots();
+    const mergedByDate = new Map<string, { toAdd: Set<string>; toRemove: Set<string> }>();
+
+    for (const { date, toAdd, toRemove } of changes) {
+        if (!mergedByDate.has(date)) {
+            mergedByDate.set(date, { toAdd: new Set(), toRemove: new Set() });
+        }
+        const entry = mergedByDate.get(date)!;
+        toAdd.filter((s) => isValidHalfHourSlot(s, timeSlots)).forEach((s) => entry.toAdd.add(s));
+        toRemove.filter((s) => isValidHalfHourSlot(s, timeSlots)).forEach((s) => entry.toRemove.add(s));
+    }
+
+    const batch = db.batch();
+    let hasWrites = false;
+
+    for (const [date, { toAdd, toRemove }] of mergedByDate) {
+        if (toAdd.size === 0 && toRemove.size === 0) continue;
+
+        const ref = db.collection(BLOCKED_SLOTS_COLLECTION).doc(date);
+        const docSnap = await ref.get();
+        const current = new Set<string>(
+            Array.isArray(docSnap.data()?.slots) ? docSnap.data()!.slots as string[] : [],
+        );
+
+        toAdd.forEach((s) => current.add(s));
+        toRemove.forEach((s) => current.delete(s));
+
+        batch.set(ref, { slots: [...current] }, { merge: true });
+        hasWrites = true;
+    }
+
+    if (!hasWrites) {
+        return { success: false, error: '沒有待更新的預留變更。' };
+    }
+
+    try {
+        await batch.commit();
+        revalidatePath('/new-reservation', 'page');
+        return { success: true };
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, error: `更新預留時段失敗: ${msg}` };
+    }
 }
 
 export async function blockSlots(
@@ -218,6 +273,17 @@ export async function createReservation(
         return { success: false, error: blockedError };
     }
 
+    const availabilityError = await assertBookingAllowed(
+        db,
+        data.roomId,
+        data.date,
+        data.startTime,
+        data.endTime,
+    );
+    if (availabilityError) {
+        return { success: false, error: availabilityError };
+    }
+
     const refNumber = `RR-${Date.now().toString().slice(-6)}`;
     const qrSecret = `qs${randomBytes(12).toString('hex')}`;
 
@@ -319,6 +385,17 @@ export async function createMultipleReservations(
                     throw new Error(blockedError);
                 }
 
+                const availabilityError = await assertBookingAllowed(
+                    db,
+                    resData.roomId,
+                    resData.date,
+                    resData.startTime,
+                    resData.endTime,
+                );
+                if (availabilityError) {
+                    throw new Error(availabilityError);
+                }
+
                 const potentialConflictsQuery = reservationsRef
                     .where('roomId', '==', resData.roomId)
                     .where('date', '==', resData.date);
@@ -411,6 +488,17 @@ export async function createPendingFpsReservation(
     const blockedError = await assertBookingNotBlocked(data.date, data.startTime, data.endTime);
     if (blockedError) {
         return { success: false, error: blockedError };
+    }
+
+    const availabilityError = await assertBookingAllowed(
+        db,
+        data.roomId,
+        data.date,
+        data.startTime,
+        data.endTime,
+    );
+    if (availabilityError) {
+        return { success: false, error: availabilityError };
     }
     
     // Create a new reservation with 'Pending Fps Payment' status
