@@ -26,6 +26,14 @@ export type Reservation = {
   amountPaidWithTokens?: number;
   amountPaidWithFps?: number;
   expiresAt?: firestore.Timestamp; // For pending payments, use Firestore Timestamp
+  /** SHA256-based Google Calendar event id (shared across room + door calendars) */
+  googleCalendarEventId?: string;
+  /** Door control slot used when the booking was created */
+  googleCalendarDoorSlot?: '1A' | '1B' | '2A' | '2B';
+  /** ISO timestamp when the booking was cancelled */
+  cancelledAt?: string;
+  /** Last known Google Calendar delete sync state */
+  googleCalendarSyncStatus?: 'synced' | 'pending_delete' | 'delete_failed';
 };
 
 export type TemporaryAccess = {

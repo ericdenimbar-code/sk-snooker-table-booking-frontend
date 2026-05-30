@@ -307,8 +307,15 @@ export async function createReservation(
     
     // 1. Trigger Google Calendar and HA Webhook immediately
     try {
-        const calendarSuccess = await createGoogleCalendarEvent(newReservation);
-        if (calendarSuccess) {
+        const calendarResult = await createGoogleCalendarEvent(newReservation);
+        if (calendarResult.ok) {
+            if (calendarResult.meta) {
+                await db.collection('reservations').doc(refNumber).update({
+                    googleCalendarEventId: calendarResult.meta.googleCalendarEventId,
+                    googleCalendarDoorSlot: calendarResult.meta.googleCalendarDoorSlot,
+                    googleCalendarSyncStatus: 'synced',
+                });
+            }
             const haSettings = await getHASettings();
             if (haSettings.url && haSettings.webhookId) {
                 fetch(`${haSettings.url}/api/webhook/${haSettings.webhookId}`, {
@@ -444,8 +451,15 @@ export async function createMultipleReservations(
             const [settings, haSettings] = await Promise.all([getRoomSettings('1'), getHASettings()]);
 
             for (const newReservation of createdReservations) {
-                const calendarSuccess = await createGoogleCalendarEvent(newReservation);
-                 if (calendarSuccess) {
+                const calendarResult = await createGoogleCalendarEvent(newReservation);
+                if (calendarResult.ok) {
+                    if (calendarResult.meta) {
+                        await db.collection('reservations').doc(newReservation.id).update({
+                            googleCalendarEventId: calendarResult.meta.googleCalendarEventId,
+                            googleCalendarDoorSlot: calendarResult.meta.googleCalendarDoorSlot,
+                            googleCalendarSyncStatus: 'synced',
+                        });
+                    }
                     if (haSettings.url && haSettings.webhookId) {
                          fetch(`${haSettings.url}/api/webhook/${haSettings.webhookId}`, {
                             method: 'POST',

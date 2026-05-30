@@ -346,10 +346,17 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
     if (selectedEvent.eventType === 'reservation') {
         const result = await cancelReservation(selectedEvent, shouldRefund);
         if (result.success) {
-            const successMessage = shouldRefund 
+            const refundNote = shouldRefund
                 ? `已成功為 ${selectedEvent.userEmail} 退回 HKD ${selectedEvent.costInTokens}。`
-                : `已成功取消預訂，未退回款項。`;
-            toast({ title: "預訂已取消", description: successMessage });
+                : '已成功取消預訂，未退回款項。';
+            const calendarNote = result.calendarSynced
+                ? 'Google Calendar 日程已同步移除。'
+                : (result.calendarWarning ?? 'Google Calendar 同步未完成，系統將自動校對。');
+            toast({
+                title: result.calendarSynced ? '預訂已取消' : '預訂已取消（日曆同步待處理）',
+                description: `${refundNote} ${calendarNote}`,
+                variant: result.calendarSynced ? 'default' : 'destructive',
+            });
             setReservations(prev => prev.map(res => res.id === selectedEvent.id ? { ...res, status: 'Cancelled' } : res));
         } else {
             toast({ variant: 'destructive', title: '取消失敗', description: result.error });
@@ -578,12 +585,24 @@ const CancellationDialog = ({ event, open, onOpenChange, isSubmitting, onConfirm
               <p>您正在為使用者 <span className="font-semibold text-foreground">{event.userEmail}</span> 取消預訂。</p>
               <p>時段：<span className="font-semibold text-foreground">{event.date} {event.startTime}-{event.endTime}</span>。</p>
               <p className="mt-2">費用為 <span className="font-semibold text-primary">HKD {event.costInTokens}</span>。請選擇是否退款。</p>
+              {isSubmitting && (
+                <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  正在同步 Google Calendar...
+                </p>
+              )}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={isSubmitting}>返回</AlertDialogCancel>
-          <Button variant="outline" onClick={() => onConfirm(false)} disabled={isSubmitting}>{isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}取消但<strong className="mx-1">不</strong>退款</Button>
-          <Button variant="destructive" onClick={() => onConfirm(true)} disabled={isSubmitting}>{isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}取消並退款</Button>
+          <Button variant="outline" onClick={() => onConfirm(false)} disabled={isSubmitting}>
+            {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {isSubmitting ? '正在同步 Google Calendar...' : <>取消但<strong className="mx-1">不</strong>退款</>}
+          </Button>
+          <Button variant="destructive" onClick={() => onConfirm(true)} disabled={isSubmitting}>
+            {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {isSubmitting ? '正在同步 Google Calendar...' : '取消並退款'}
+          </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

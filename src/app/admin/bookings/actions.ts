@@ -7,7 +7,7 @@ import admin from 'firebase-admin';
 import qrcode from 'qrcode';
 import { db } from '@/lib/firebase-admin';
 import { getUserByEmail } from '@/app/admin/users/actions';
-import { deleteGoogleCalendarEvent } from '@/lib/google-calendar';
+import { deleteGoogleCalendarEventsForReservation } from '@/lib/google-calendar';
 import { sendQrCodeEmail } from '@/lib/email';
 import { getRoomSettings } from '@/app/admin/settings/actions';
 import type { Reservation, TemporaryAccess } from '@/types';
@@ -30,6 +30,8 @@ type AdminBookingsInitialData = {
 type ServerActionResponse = {
     success: boolean;
     error?: string;
+    calendarSynced?: boolean;
+    calendarWarning?: string;
 };
 
 export async function getAdminBookingsInitialData(dayYmd?: string): Promise<AdminBookingsInitialData> {
@@ -96,20 +98,61 @@ export async function cancelReservation(
             }
         }
         
-        // Use a transaction to ensure atomicity
+        const cancelledAt = new Date().toISOString();
+
+        // Use a transaction to ensure atomicity — DB status first, calendar sync after
         await db.runTransaction(async (transaction) => {
             const reservationRef = db.collection('reservations').doc(reservation.id);
-            transaction.update(reservationRef, { status: 'Cancelled' });
+            transaction.update(reservationRef, {
+                status: 'Cancelled',
+                cancelledAt,
+                googleCalendarSyncStatus: 'pending_delete',
+            });
 
             if (amountToRefund > 0 && user) {
                 const userRef = db.collection('users').doc(user.id);
-                // Use atomic increment for safer token refunds
                 transaction.update(userRef, { tokens: admin.firestore.FieldValue.increment(amountToRefund) });
             }
         });
-        
-        // After the transaction is successful, delete the calendar event
-        await deleteGoogleCalendarEvent(reservation);
+
+        const reservationForCalendar: Reservation = {
+            ...reservation,
+            status: 'Cancelled',
+            cancelledAt,
+            googleCalendarEventId:
+                reservation.googleCalendarEventId ??
+                undefined,
+        };
+
+        let calendarSynced = true;
+        let calendarWarning: string | undefined;
+
+        try {
+            const calendarResult = await deleteGoogleCalendarEventsForReservation(reservationForCalendar);
+            const reservationRef = db.collection('reservations').doc(reservation.id);
+
+            if (calendarResult.success) {
+                await reservationRef.update({ googleCalendarSyncStatus: 'synced' });
+            } else {
+                calendarSynced = false;
+                calendarWarning =
+                    '預訂已取消，但 Google Calendar 同步未完成。系統將每小時自動校對並清除殘留日程；您也可稍後再試。';
+                console.error(
+                    `[Google Calendar] Cancel sync failed for ${reservation.id}:`,
+                    calendarResult.errors.join('; '),
+                );
+                await reservationRef.update({ googleCalendarSyncStatus: 'delete_failed' });
+            }
+        } catch (calendarError: unknown) {
+            calendarSynced = false;
+            const message = calendarError instanceof Error ? calendarError.message : String(calendarError);
+            calendarWarning =
+                '預訂已取消，但 Google Calendar 同步發生錯誤。系統將每小時自動校對並清除殘留日程；您也可稍後再試。';
+            console.error(`[Google Calendar] Cancel sync error for ${reservation.id}:`, message);
+            await db.collection('reservations').doc(reservation.id).update({
+                googleCalendarSyncStatus: 'delete_failed',
+            });
+        }
 
         // Revalidate paths to update caches
         revalidatePath('/admin/bookings', 'page');
@@ -118,7 +161,7 @@ export async function cancelReservation(
             revalidatePath(`/admin/users`);
         }
 
-        return { success: true };
+        return { success: true, calendarSynced, calendarWarning };
 
     } catch (e: any) {
         console.error(`Failed to cancel reservation ${reservation.id}:`, e);

@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/calendar-sync-audit",
+      "schedule": "0 * * * *"
+    }
+  ]
+}

@@ -1,6 +1,4 @@
 
-'use server';
-
 import { createHash } from 'crypto';
 import { google } from 'googleapis';
 import { db } from '@/lib/firebase-admin';
@@ -10,8 +8,12 @@ import { parseISO, isWithinInterval, add, sub, format } from 'date-fns';
 const HKT_TIMEZONE = 'Asia/Hong_Kong';
 
 /** Google Calendar 自訂 event id 僅允許 a-v 與 0-9；Firestore ID 可能含 w-z 導致 insert 失敗 */
-function toGoogleCalendarEventId(raw: string): string {
+export function getGoogleCalendarEventId(raw: string): string {
     return createHash('sha256').update(raw).digest('hex').slice(0, 32);
+}
+
+function toGoogleCalendarEventId(raw: string): string {
+    return getGoogleCalendarEventId(raw);
 }
 
 function parseEventInstant(isoOrDate: string | Date): Date {
@@ -200,13 +202,97 @@ async function createEvent(calendarId: string, details: EventDetails): Promise<{
     }
 }
 
+export type GoogleCalendarReservationMeta = {
+    googleCalendarEventId: string;
+    googleCalendarDoorSlot?: Slot;
+};
+
+export type GoogleCalendarDeleteResult = {
+    success: boolean;
+    deletedCalendars: string[];
+    errors: string[];
+};
+
+export function getReservationCalendarTargets(reservation: Reservation): { calendarId: string; eventId: string }[] {
+    const eventId = reservation.googleCalendarEventId ?? getGoogleCalendarEventId(reservation.id);
+    const targets: { calendarId: string; eventId: string }[] = [];
+
+    const mainCalendarId = getCalendarIdBySlot(reservation.roomId as '1' | '2');
+    if (mainCalendarId) {
+        targets.push({ calendarId: mainCalendarId, eventId });
+    }
+
+    const doorSlots: Slot[] = reservation.googleCalendarDoorSlot
+        ? [reservation.googleCalendarDoorSlot]
+        : reservation.roomId === '1'
+          ? ['1A', '1B']
+          : ['2A', '2B'];
+
+    for (const slot of doorSlots) {
+        const doorCalendarId = getCalendarIdBySlot(slot);
+        if (doorCalendarId) {
+            targets.push({ calendarId: doorCalendarId, eventId });
+        }
+    }
+
+    return targets;
+}
+
+export async function eventExistsOnCalendar(calendarId: string, eventId: string): Promise<boolean> {
+    if (!hasGoogleConfig) return false;
+    try {
+        await calendar.events.get({ calendarId, eventId });
+        return true;
+    } catch (error: unknown) {
+        const err = error as { code?: number };
+        if (err.code === 404) return false;
+        throw error;
+    }
+}
+
+export async function deleteGoogleCalendarEventsForReservation(
+    reservation: Reservation,
+): Promise<GoogleCalendarDeleteResult> {
+    if (!hasGoogleConfig) {
+        return { success: false, deletedCalendars: [], errors: ['Google Calendar API 未設定'] };
+    }
+
+    const targets = getReservationCalendarTargets(reservation);
+    const deletedCalendars: string[] = [];
+    const errors: string[] = [];
+
+    for (const { calendarId, eventId } of targets) {
+        try {
+            await calendar.events.delete({ calendarId, eventId });
+            deletedCalendars.push(calendarId);
+            console.log(`[Google Calendar] deleted event ${eventId} from ${calendarId}`);
+        } catch (error: unknown) {
+            const err = error as { code?: number; message?: string };
+            if (err.code === 404) {
+                continue;
+            }
+            const msg = err.message ?? String(error);
+            errors.push(`${calendarId}: ${msg}`);
+            console.warn(`[Google Calendar] delete failed ${eventId}@${calendarId}: ${msg}`);
+        }
+    }
+
+    return {
+        success: errors.length === 0,
+        deletedCalendars,
+        errors,
+    };
+}
+
 /**
  * Main function to create calendar events for a reservation or temporary access.
  */
-export async function createGoogleCalendarEvent(reservation: Reservation | TemporaryAccess): Promise<boolean> {
+export async function createGoogleCalendarEvent(
+    reservation: Reservation | TemporaryAccess,
+): Promise<{ ok: boolean; meta?: GoogleCalendarReservationMeta }> {
     if (!hasGoogleConfig) {
         console.error("Cannot create calendar event: Google Calendar API is not configured.");
-        return false;
+        return { ok: false };
     }
 
     const isTempAccess = 'validFrom' in reservation;
@@ -242,8 +328,11 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
     
     if (!qrSecret) {
         console.error(`Cannot create calendar event: QR Secret is missing for reservation ${reservation.id}`);
-        return false;
+        return { ok: false };
     }
+
+    const googleCalendarEventId = getGoogleCalendarEventId(reservation.id);
+    let doorSlotUsed: Slot | undefined;
 
     if (!isTempAccess) {
         const mainCalendarId = getCalendarIdBySlot(roomIdForSlotFinding);
@@ -268,20 +357,25 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
     }
 
     if (availableSlot) {
+        doorSlotUsed = availableSlot;
         const doorCalendarId = getCalendarIdBySlot(availableSlot);
         if (doorCalendarId) {
-            await createEvent(doorCalendarId, {
+            const created = await createEvent(doorCalendarId, {
                 summary: qrSecret,
                 description: `User: ${userIdentifier} | Ref: ${reservation.id} | Slot: ${availableSlot}`,
                 start: doorControlStart.toISOString(),
                 end: doorControlEnd.toISOString(),
                 eventId: reservation.id,
             });
-            return true;
+            return {
+                ok: !!created,
+                meta: isTempAccess ? undefined : { googleCalendarEventId, googleCalendarDoorSlot: doorSlotUsed },
+            };
         }
     } else {
         console.error(`No available A/B slot found for room ${roomIdForSlotFinding} at the requested time.`);
         const fallbackSlot: Slot = roomIdForSlotFinding === '1' ? '1A' : '2A';
+        doorSlotUsed = fallbackSlot;
         const fallbackCalendarId = getCalendarIdBySlot(fallbackSlot);
         if (fallbackCalendarId) {
             console.warn(`Falling back to primary slot ${fallbackSlot} for door control.`);
@@ -293,10 +387,13 @@ export async function createGoogleCalendarEvent(reservation: Reservation | Tempo
                 eventId: reservation.id,
             });
         }
-        return false;
+        return {
+            ok: false,
+            meta: isTempAccess ? undefined : { googleCalendarEventId, googleCalendarDoorSlot: doorSlotUsed },
+        };
     }
     
-    return false;
+    return { ok: false };
 }
 
 /**
@@ -347,51 +444,27 @@ export async function syncTemporaryAccessApplicationToCalendar(params: {
  */
 export async function deleteGoogleCalendarEvent(reservation: Reservation | TemporaryAccess): Promise<boolean> {
     if (!hasGoogleConfig) return false;
-    
-    const eventId = reservation.id;
-    const sanitizedEventId = eventId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    
-    const tryDelete = async (calendarId: string) => {
-        try {
-            await calendar.events.delete({ calendarId, eventId: sanitizedEventId });
-            console.log(`Successfully deleted event ${sanitizedEventId} from calendar ${calendarId}`);
-        } catch (error: any) {
-            if (error.code !== 404) {
-                console.warn(`Could not delete event ${sanitizedEventId} from ${calendarId}: ${error.message}`);
-            }
-        }
-    };
-    
+
     if ('validFrom' in reservation) {
         const temp = reservation as TemporaryAccess;
-        // 臨時進出（含 Admin / VVIP）不刪除 GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp 上的事件
         if (temp.segmentKey) {
             return true;
         }
+        const eventId = getGoogleCalendarEventId(reservation.id);
         const allDoorCalendars = [CALENDAR_ID_DOOR_CONTROL_1A, CALENDAR_ID_DOOR_CONTROL_1B, CALENDAR_ID_DOOR_CONTROL_2A, CALENDAR_ID_DOOR_CONTROL_2B].filter(Boolean) as string[];
         for (const calId of allDoorCalendars) {
-            await tryDelete(calId);
+            try {
+                await calendar.events.delete({ calendarId: calId, eventId });
+            } catch (error: unknown) {
+                const err = error as { code?: number; message?: string };
+                if (err.code !== 404) {
+                    console.warn(`Could not delete temp access event from ${calId}: ${err.message}`);
+                }
+            }
         }
-        console.log(`Attempted deletion of temp access event ${eventId} from all door calendars.`);
         return true;
     }
 
-    const regularReservation = reservation as Reservation;
-    const { roomId } = regularReservation;
-
-    const mainCalendarId = getCalendarIdBySlot(roomId as '1' | '2');
-    if (mainCalendarId) {
-        await tryDelete(mainCalendarId);
-    }
-    
-    const doorSlots: Slot[] = roomId === '1' ? ['1A', '1B'] : ['2A', '2B'];
-    for (const slot of doorSlots) {
-        const doorCalendarId = getCalendarIdBySlot(slot);
-        if (doorCalendarId) {
-            await tryDelete(doorCalendarId);
-        }
-    }
-    
-    console.log(`Attempted deletion of all calendar events for reservation ${eventId}`);
-    return true;
+    const result = await deleteGoogleCalendarEventsForReservation(reservation as Reservation);
+    return result.success || result.deletedCalendars.length > 0;
 }
