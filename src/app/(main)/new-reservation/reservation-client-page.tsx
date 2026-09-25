@@ -16,7 +16,8 @@ import {
 } from '@/components/ui/alert-dialog';
 import { ConfirmationDialog, type ConfirmationDetails } from '@/components/custom/confirmation-dialog';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, ShoppingCart, ArrowRight } from 'lucide-react';
+import { Loader2, ShoppingCart, ArrowRight, ChevronDown } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import type { RoomSettings } from '@/app/admin/settings/actions';
 import type { Reservation } from '@/types';
 import { adjustUserTokens, getUserByEmail } from '@/app/admin/users/actions';
@@ -100,6 +101,7 @@ export function ReservationClientPage({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [isSoloBooking, setIsSoloBooking] = useState(false);
+  const [isDetailsCollapsed, setIsDetailsCollapsed] = useState(false);
   const [pendingBlockAdds, setPendingBlockAdds] = useState<Map<string, Set<string>>>(new Map());
   const [pendingBlockRemoves, setPendingBlockRemoves] = useState<Map<string, Set<string>>>(new Map());
 
@@ -669,8 +671,14 @@ export function ReservationClientPage({
     return format(date, 'HH:mm');
   };
 
+  const isRangeSelected = sortedSlots.length >= 2;
+
   useEffect(() => {
-    if (sortedSlots.length > 0) {
+    if (!isRangeSelected) setIsDetailsCollapsed(false);
+  }, [isRangeSelected]);
+
+  useEffect(() => {
+    if (isRangeSelected && !isDetailsCollapsed) {
       const lastSlot = sortedSlots[sortedSlots.length - 1];
       const lastSlotElement = slotRefs.current.get(lastSlot.time);
       const panelElement = confirmationPanelRef.current;
@@ -689,7 +697,7 @@ export function ReservationClientPage({
         }
       }
     }
-  }, [sortedSlots]);
+  }, [sortedSlots, isRangeSelected, isDetailsCollapsed]);
   
   const handleClearSelection = () => {
     setSelectedSlots([]);
@@ -826,8 +834,24 @@ export function ReservationClientPage({
         </CardContent>
       </Card>
       
-      {selectedSlots.length > 0 && (
-        <Card ref={confirmationPanelRef} className="w-full max-w-md sticky bottom-4 shadow-lg border-primary border-2 animate-in fade-in-0 zoom-in-95">
+      {isRangeSelected && (
+        <div className="w-full max-w-md sticky bottom-4 z-20 flex flex-col items-center">
+          <button
+            type="button"
+            aria-expanded={!isDetailsCollapsed}
+            aria-label={isDetailsCollapsed ? '展開預約詳情' : '收合預約詳情'}
+            onClick={() => setIsDetailsCollapsed((collapsed) => !collapsed)}
+            className="relative z-10 -mb-px flex h-7 w-16 items-center justify-center rounded-t-md border border-b-0 border-neutral-300 bg-neutral-200 text-neutral-500 shadow-sm transition-colors hover:bg-neutral-300"
+          >
+            <ChevronDown className={cn('h-5 w-5 transition-transform duration-300', isDetailsCollapsed && 'rotate-180')} />
+          </button>
+          <div
+            className={cn(
+              'w-full overflow-hidden transition-[max-height,opacity,transform] duration-300 ease-in-out',
+              isDetailsCollapsed ? 'max-h-0 translate-y-3 opacity-0' : 'max-h-[48rem] translate-y-0 opacity-100',
+            )}
+          >
+        <Card ref={confirmationPanelRef} className="w-full shadow-lg border-primary border-2">
           <CardContent className="p-4 flex flex-col gap-4">
               <div>
                 <div className="flex justify-between items-center mb-2">
@@ -904,6 +928,8 @@ export function ReservationClientPage({
               </div>
           </CardContent>
         </Card>
+          </div>
+        </div>
       )}
 
       <ConfirmationDialog
