@@ -18,6 +18,10 @@ export type Reservation = {
   endTime: string; // 'HH:mm'
   hours: number;
   costInTokens: number;
+  /** 管理員預約不扣代幣時，記錄當時實際應付代幣，供報表顯示 */
+  quotedCostInTokens?: number;
+  /** 管理員在預訂詳情填寫的摘要 */
+  summary?: string;
   bookingDate: string; // ISO string
   status: 'Confirmed' | 'Cancelled' | 'Pending Fps Payment'; 
   isSoloPractice?: boolean;

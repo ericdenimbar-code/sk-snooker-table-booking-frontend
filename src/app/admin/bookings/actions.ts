@@ -170,6 +170,26 @@ export async function cancelReservation(
 }
 
 
+export async function updateReservationSummary(
+  reservationId: string,
+  summary: string,
+): Promise<ServerActionResponse> {
+  if (!db) return { success: false, error: '後端資料庫未連接。' };
+  const id = reservationId.trim();
+  if (!id) return { success: false, error: '找不到預訂記錄。' };
+
+  try {
+    const ref = db.collection('reservations').doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return { success: false, error: '找不到預訂記錄。' };
+    await ref.update({ summary: summary.trim() });
+    return { success: true };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { success: false, error: `無法儲存摘要：${message}` };
+  }
+}
+
 export async function resendConfirmationEmail(qrSecret: string): Promise<ServerActionResponse> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
     

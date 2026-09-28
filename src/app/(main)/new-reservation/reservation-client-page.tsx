@@ -615,7 +615,8 @@ export function ReservationClientPage({
       startTime,
       endTime,
       hours: hours,
-      costInTokens: isAdmin ? 0 : details.finalCost, // Admin bookings cost 0
+      costInTokens: isAdmin ? 0 : details.finalCost,
+      quotedCostInTokens: isAdmin ? details.finalCost : undefined,
       isSoloPractice: details.isSolo,
       status: 'Confirmed',
       paymentMethod: 'tokens',

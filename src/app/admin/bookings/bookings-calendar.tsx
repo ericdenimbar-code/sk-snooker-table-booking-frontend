@@ -17,11 +17,12 @@ import qrcode from 'qrcode';
 import { collection, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { useToast } from '@/hooks/use-toast';
 import type { Reservation, TemporaryAccess } from '@/types';
-import { cancelReservation, getAdminBookingsInitialData } from '@/app/admin/bookings/actions';
+import { cancelReservation, getAdminBookingsInitialData, updateReservationSummary } from '@/app/admin/bookings/actions';
 import { getUserById } from '@/app/admin/users/actions';
 import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions';
 import { cn } from '@/lib/utils';
@@ -429,7 +430,17 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
         </div>
       </div>
       
-      <EventDetailDialog event={selectedEvent} open={!!selectedEvent} onOpenChange={handleCloseDetailDialog} onCancel={handleOpenCancelDialog} onShowQr={handleShowQrCode} />
+      <EventDetailDialog
+        event={selectedEvent}
+        open={!!selectedEvent}
+        onOpenChange={handleCloseDetailDialog}
+        onCancel={handleOpenCancelDialog}
+        onShowQr={handleShowQrCode}
+        onSummarySaved={(id, summary) => {
+          setReservations((prev) => prev.map((res) => (res.id === id ? { ...res, summary } : res)));
+          setSelectedEvent((prev) => (prev && prev.id === id ? { ...prev, summary } : prev));
+        }}
+      />
       <CancellationDialog event={selectedEvent} open={isCancelDialogOpen} onOpenChange={setIsCancelDialogOpen} isSubmitting={isSubmitting} onConfirm={handleCancellation} />
       <QrCodeDialog event={selectedEvent} open={isQrDialogOpen} onOpenChange={setIsQrDialogOpen} isLoading={isLoadingQr} qrCodeDataUrl={qrCodeDataUrl} />
     </>
@@ -480,9 +491,13 @@ const EventButton = ({ event, currentDay, onClick, className }: { event: Combine
     );
 };
 
-const EventDetailDialog = ({ event, open, onOpenChange, onCancel, onShowQr }: { event: CombinedEvent | null, open: boolean, onOpenChange: (open: boolean) => void, onCancel: () => void, onShowQr: (event: CombinedEvent) => void }) => {
+const EventDetailDialog = ({ event, open, onOpenChange, onCancel, onShowQr, onSummarySaved }: { event: CombinedEvent | null, open: boolean, onOpenChange: (open: boolean) => void, onCancel: () => void, onShowQr: (event: CombinedEvent) => void, onSummarySaved: (id: string, summary: string) => void }) => {
+  const { toast } = useToast();
   const [tempAccessProfile, setTempAccessProfile] = useState<{ name: string; phone: string } | null>(null);
   const [isLoadingProfile, setIsLoadingProfile] = useState(false);
+  const [isSummaryOpen, setIsSummaryOpen] = useState(false);
+  const [summaryDraft, setSummaryDraft] = useState('');
+  const [isSavingSummary, setIsSavingSummary] = useState(false);
 
   useEffect(() => {
     if (!open || !event || event.eventType !== 'temp-access') {
@@ -514,29 +529,63 @@ const EventDetailDialog = ({ event, open, onOpenChange, onCancel, onShowQr }: { 
   const tempUserDisplayName = tempAccessProfile?.name ?? (isLoadingProfile ? '載入中…' : event.userEmail);
   const tempUserPhone = tempAccessProfile?.phone ?? (isLoadingProfile ? '載入中…' : '—');
 
+  const reservationSummary = isReservation ? (event as Reservation).summary ?? '' : '';
+
+  const openSummaryEditor = () => {
+    setSummaryDraft(reservationSummary);
+    setIsSummaryOpen(true);
+  };
+
+  const saveSummary = async () => {
+    if (!isReservation) return;
+    setIsSavingSummary(true);
+    const next = summaryDraft.trim();
+    const result = await updateReservationSummary(event.id, next);
+    setIsSavingSummary(false);
+    if (!result.success) {
+      toast({ variant: 'destructive', title: '無法儲存摘要', description: result.error });
+      return;
+    }
+    onSummarySaved(event.id, next);
+    setIsSummaryOpen(false);
+  };
+
+  const infoRow = (icon: React.ReactNode, label: string, value: string) => (
+    <>
+      <span className="text-muted-foreground">{icon}</span>
+      <p className="text-sm text-muted-foreground">{label}</p>
+      <p className="font-semibold">{value}</p>
+    </>
+  );
+
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{isReservation ? '預訂詳情' : '臨時進出碼詳情'}</DialogTitle>
            <DialogDescription>{format(event.start, 'yyyy年MM月dd日 HH:mm')} - {format(event.end, 'HH:mm')}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-4 py-4">
-            <div className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-3">
-                <User className="h-5 w-5 text-muted-foreground self-start mt-1"/>
-                <div><p className="text-sm text-muted-foreground">用戶</p><p className="font-semibold">{isReservation ? event.userName : tempUserDisplayName}</p></div>
-                
-                {isReservation ? <>
-                  <Building2 className="h-5 w-5 text-muted-foreground self-start mt-1"/>
-                  <div><p className="text-sm text-muted-foreground">枱號</p><p className="font-semibold">{event.roomName.replace('房間', '枱號')}</p></div>
-                </> : null}
-
-                <Phone className="h-5 w-5 text-muted-foreground self-start mt-1"/>
-                <div><p className="text-sm text-muted-foreground">手機號碼</p><p className="font-semibold">{isReservation ? event.userPhone : tempUserPhone}</p></div>
-
-                <Hash className="h-5 w-5 text-muted-foreground self-start mt-1"/>
-                <div><p className="text-sm text-muted-foreground">參考編號</p><p className="font-semibold">{event.id}</p></div>
+        <div className="space-y-4 py-2">
+            <div className="grid grid-cols-[auto_5.5rem_1fr] items-center gap-x-3 gap-y-2">
+                {infoRow(<User className="h-5 w-5" />, '用戶', isReservation ? event.userName : tempUserDisplayName)}
+                {isReservation ? infoRow(<Building2 className="h-5 w-5" />, '枱號', event.roomName.replace('房間', '枱號')) : null}
+                {infoRow(<Phone className="h-5 w-5" />, '手機號碼', isReservation ? event.userPhone : tempUserPhone)}
+                {infoRow(<Hash className="h-5 w-5" />, '參考編號', event.id)}
             </div>
+
+            {isReservation && (
+              <div className="space-y-2 border-t pt-3">
+                <p className="text-sm text-muted-foreground">摘要</p>
+                <button
+                  type="button"
+                  onClick={openSummaryEditor}
+                  className="min-h-16 w-full whitespace-pre-wrap rounded-md border bg-white px-3 py-2 text-left text-sm font-semibold"
+                >
+                  {reservationSummary || ' '}
+                </button>
+              </div>
+            )}
 
              <div className="border-t pt-4 mt-4 flex flex-wrap gap-2 justify-end">
                 <Button variant="outline" size="sm" onClick={() => onShowQr(event)}><QrCodeIcon className="mr-2 h-4 w-4" />QR Code</Button>
@@ -551,6 +600,27 @@ const EventDetailDialog = ({ event, open, onOpenChange, onCancel, onShowQr }: { 
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    {isReservation && (
+      <Dialog open={isSummaryOpen} onOpenChange={setIsSummaryOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>摘要</DialogTitle>
+            <DialogDescription>輸入後按確定，內容會顯示在預訂詳情及匯出報表。</DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={summaryDraft}
+            onChange={(e) => setSummaryDraft(e.target.value)}
+            className="h-[33vh] resize-none text-sm font-semibold"
+            aria-label="摘要"
+          />
+          <Button onClick={() => void saveSummary()} disabled={isSavingSummary}>
+            {isSavingSummary && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            確定
+          </Button>
+        </DialogContent>
+      </Dialog>
+    )}
+    </>
   );
 };
 

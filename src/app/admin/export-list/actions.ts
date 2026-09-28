@@ -1,6 +1,8 @@
 'use server';
 
 import { db } from '@/lib/firebase-admin';
+import { getRoomSettings } from '@/app/admin/settings/actions';
+import { expandBookingToHalfHourKeys } from '@/lib/blocked-slots';
 import type { Reservation } from '@/types';
 import { endOfMonth, format, startOfMonth } from 'date-fns';
 import * as XLSX from 'xlsx';
@@ -28,7 +30,57 @@ function partyLabel(r: Reservation): string {
   return '—';
 }
 
-function rowsForSheet(reservations: Reservation[]) {
+/** 與預約頁相同：VIP / VVIP / ADMIN 八五折，一人練波每半小時減 15，兩者取較低。 */
+function quotedAdminTokenCost(r: Reservation, slotCostByStart: Map<string, number>): number {
+  const slots = expandBookingToHalfHourKeys(r.date, r.startTime, r.endTime);
+  const total = slots.reduce((sum, slot) => sum + (slotCostByStart.get(slot.time) || 0), 0);
+  const privileged = Math.floor(total * 0.85);
+  if (r.isSoloPractice) {
+    const solo = total - slots.length * 15;
+    return Math.max(Math.min(privileged, solo), 0);
+  }
+  return Math.max(privileged, 0);
+}
+
+async function adminEmailsAmong(emails: string[]): Promise<Set<string>> {
+  const admins = new Set<string>();
+  if (!db) return admins;
+  const unique = [...new Set(emails.map((email) => email.trim()).filter(Boolean))];
+  for (let i = 0; i < unique.length; i += 30) {
+    const chunk = unique.slice(i, i + 30);
+    const snap = await db.collection('users').where('email', 'in', chunk).get();
+    snap.docs.forEach((doc) => {
+      const data = doc.data() as { email?: string; role?: string };
+      if (String(data.role ?? '').toLowerCase() === 'admin' && data.email) {
+        admins.add(data.email.toLowerCase());
+      }
+    });
+  }
+  return admins;
+}
+
+function tokenAmount(
+  r: Reservation,
+  adminEmails: Set<string>,
+  slotCostByStart: Map<string, number>,
+): number {
+  if (typeof r.quotedCostInTokens === 'number') return r.quotedCostInTokens;
+  if (r.costInTokens > 0) return r.costInTokens;
+  const email = (r.userEmail || '').toLowerCase();
+  if (email && adminEmails.has(email)) return quotedAdminTokenCost(r, slotCostByStart);
+  return r.costInTokens ?? 0;
+}
+
+async function rowsForSheet(reservations: Reservation[]) {
+  const zeroCostEmails = reservations
+    .filter((r) => !(typeof r.quotedCostInTokens === 'number') && !(r.costInTokens > 0))
+    .map((r) => r.userEmail || '');
+  const [adminEmails, settings] = await Promise.all([
+    adminEmailsAmong(zeroCostEmails),
+    getRoomSettings('1'),
+  ]);
+  const slotCostByStart = new Map((settings?.slotCostsData ?? []).map((slot) => [slot.startTime, slot.cost]));
+
   return reservations.map((r) => ({
     預約日期: r.date,
     開始時間: r.startTime,
@@ -38,7 +90,8 @@ function rowsForSheet(reservations: Reservation[]) {
     桌號: r.roomName,
     人數: partyLabel(r),
     狀態: r.status,
-    代幣: r.costInTokens,
+    代幣: tokenAmount(r, adminEmails, slotCostByStart),
+    摘要: r.summary?.trim() || '',
   }));
 }
 
@@ -98,7 +151,7 @@ export async function exportReservationsExcel(
     return { success: false, error: loaded.error ?? '讀取預約失敗' };
   }
 
-  const rows = rowsForSheet(loaded.reservations);
+  const rows = await rowsForSheet(loaded.reservations);
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '預約');
