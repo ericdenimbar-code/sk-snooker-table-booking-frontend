@@ -4,7 +4,14 @@
 import { db } from '@/lib/firebase-admin';
 import type { Reservation, TemporaryAccess } from '@/types';
 import { revalidatePath } from 'next/cache';
-import { createGoogleCalendarEvent } from '@/lib/google-calendar';
+import { applyDoorMultiControlCalendar, createGoogleCalendarEvent } from '@/lib/google-calendar';
+import { getAdminSlotPeriodHkt } from '@/lib/hkt-temp-segment';
+import {
+  DOOR_MULTI_CONTROLS,
+  parseDoorMultiEvents,
+  reconcileDoorMultiCoverage,
+  type DoorMultiEventRecord,
+} from '@/lib/door-multi-controls';
 import { parseISO, add, sub, addDays, format, subDays } from 'date-fns';
 import { randomBytes } from 'crypto';
 import qrcode from 'qrcode';
@@ -103,6 +110,12 @@ export async function applyBlockedSlotChanges(
 
     const batch = db.batch();
     let hasWrites = false;
+    const calendarPlans: {
+        date: string;
+        existingEvents: DoorMultiEventRecord[];
+        toAdd: string[];
+        toRemove: string[];
+    }[] = [];
 
     for (const [date, { toAdd, toRemove }] of mergedByDate) {
         if (toAdd.size === 0 && toRemove.size === 0) continue;
@@ -118,6 +131,12 @@ export async function applyBlockedSlotChanges(
 
         batch.set(ref, { slots: [...current] }, { merge: true });
         hasWrites = true;
+        calendarPlans.push({
+            date,
+            existingEvents: parseDoorMultiEvents(docSnap.data()?.doorMultiEvents),
+            toAdd: [...toAdd],
+            toRemove: [...toRemove],
+        });
     }
 
     if (!hasWrites) {
@@ -127,11 +146,68 @@ export async function applyBlockedSlotChanges(
     try {
         await batch.commit();
         revalidatePath('/new-reservation', 'page');
-        return { success: true };
     } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         return { success: false, error: `更新預留時段失敗: ${msg}` };
     }
+
+    const calendarWarning = await syncReservedSlotsToDoorMultiCalendar(calendarPlans);
+    return calendarWarning ? { success: true, calendarWarning } : { success: true };
+}
+
+async function syncReservedSlotsToDoorMultiCalendar(
+    plans: { date: string; existingEvents: DoorMultiEventRecord[]; toAdd: string[]; toRemove: string[] }[],
+): Promise<string | null> {
+    if (!db) return null;
+    const action = DOOR_MULTI_CONTROLS.reservedSlot;
+    const warnings: string[] = [];
+
+    for (const plan of plans) {
+        const { desired, toCreate, toDelete } = reconcileDoorMultiCoverage(
+            plan.existingEvents,
+            action.key,
+            plan.date,
+            plan.toAdd,
+            plan.toRemove,
+        );
+        if (toCreate.length === 0 && toDelete.length === 0) continue;
+
+        const calendarResult = await applyDoorMultiControlCalendar({
+            title: action.title,
+            toDeleteEventKeys: toDelete.map((event) => event.eventKey),
+            toCreate: toCreate.map((event) => {
+                const period = getAdminSlotPeriodHkt(plan.date, event.start, event.end);
+                return {
+                    eventKey: event.eventKey,
+                    startIso: period.validFrom.toISOString(),
+                    endIso: period.validUntil.toISOString(),
+                    description: `預留時段 ${plan.date} ${event.start}-${event.end}`,
+                };
+            }),
+        });
+
+        if (!calendarResult.ok && calendarResult.error) {
+            warnings.push(calendarResult.error);
+        }
+
+        const deleted = new Set(calendarResult.deletedKeys);
+        const created = new Set(calendarResult.createdKeys);
+        const kept = plan.existingEvents.filter((event) => event.actionKey === action.key && !deleted.has(event.eventKey));
+        const others = plan.existingEvents.filter((event) => event.actionKey !== action.key);
+        const createdRecords = desired.filter((event) => created.has(event.eventKey));
+
+        try {
+            await db.collection(BLOCKED_SLOTS_COLLECTION).doc(plan.date).set(
+                { doorMultiEvents: [...others, ...kept, ...createdRecords] },
+                { merge: true },
+            );
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            warnings.push(msg);
+        }
+    }
+
+    return warnings.length > 0 ? `預留時段已更新，但門禁日曆同步未完成：${warnings[0]}` : null;
 }
 
 export async function blockSlots(

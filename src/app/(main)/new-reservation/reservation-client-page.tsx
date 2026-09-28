@@ -406,6 +406,9 @@ export function ReservationClientPage({
       setPendingBlockAdds(new Map());
       setPendingBlockRemoves(new Map());
       toast({ title: '預留狀態已更新', description: '變更已同步，用戶端將即時收到更新。' });
+      if (result.calendarWarning) {
+        toast({ variant: 'destructive', title: '門禁日曆未同步', description: result.calendarWarning });
+      }
       await refreshAfterBlockChange();
     }
 

@@ -34,6 +34,7 @@ const CALENDAR_ID_DOOR_CONTROL_1B = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_
 const CALENDAR_ID_DOOR_CONTROL_2A = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A?.trim();
 const CALENDAR_ID_DOOR_CONTROL_2B = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B?.trim();
 const CALENDAR_ID_DOOR_CONTROL_TEMP = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp?.trim();
+const CALENDAR_ID_DOOR_CONTROL_MULTI = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_multi?.trim();
 
 const hasGoogleConfig = SERVICE_ACCOUNT_EMAIL && PRIVATE_KEY && CALENDAR_ID_ROOM_1 && CALENDAR_ID_ROOM_2 && CALENDAR_ID_DOOR_CONTROL_1A && CALENDAR_ID_DOOR_CONTROL_1B && CALENDAR_ID_DOOR_CONTROL_2A && CALENDAR_ID_DOOR_CONTROL_2B;
 
@@ -394,6 +395,62 @@ export async function createGoogleCalendarEvent(
     }
     
     return { ok: false };
+}
+
+/**
+ * 多重門禁日曆。標題由功能項目傳入（例如預留時段為 MEETING），此處不決定項目名稱。
+ */
+export async function applyDoorMultiControlCalendar(params: {
+  title: string;
+  toCreate: { eventKey: string; startIso: string; endIso: string; description: string }[];
+  toDeleteEventKeys: string[];
+}): Promise<{ ok: boolean; createdKeys: string[]; deletedKeys: string[]; error?: string }> {
+  const createdKeys: string[] = [];
+  const deletedKeys: string[] = [];
+
+  if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY) {
+    return { ok: false, createdKeys, deletedKeys, error: 'Google Calendar 未設定服務帳號。' };
+  }
+  if (!CALENDAR_ID_DOOR_CONTROL_MULTI) {
+    return { ok: false, createdKeys, deletedKeys, error: '缺少 GOOGLE_CALENDAR_ID_DOOR_CONTROL_multi。' };
+  }
+
+  const errors: string[] = [];
+
+  for (const eventKey of params.toDeleteEventKeys) {
+    try {
+      await calendar.events.delete({
+        calendarId: CALENDAR_ID_DOOR_CONTROL_MULTI,
+        eventId: getGoogleCalendarEventId(eventKey),
+      });
+      deletedKeys.push(eventKey);
+    } catch (error: unknown) {
+      const err = error as { code?: number; message?: string };
+      if (err.code === 404 || err.code === 410) {
+        deletedKeys.push(eventKey);
+      } else {
+        errors.push(err.message ?? String(error));
+      }
+    }
+  }
+
+  for (const item of params.toCreate) {
+    const created = await createEvent(CALENDAR_ID_DOOR_CONTROL_MULTI, {
+      summary: params.title,
+      description: item.description,
+      start: item.startIso,
+      end: item.endIso,
+      eventId: item.eventKey,
+      doorAccessRequestId: item.eventKey,
+    });
+    if (created) createdKeys.push(item.eventKey);
+    else errors.push(item.eventKey);
+  }
+
+  if (errors.length > 0) {
+    return { ok: false, createdKeys, deletedKeys, error: errors.join('; ') };
+  }
+  return { ok: true, createdKeys, deletedKeys };
 }
 
 /**
