@@ -477,6 +477,10 @@ const EventButton = ({ event, currentDay, onClick, className }: { event: Combine
     const height = `${durationInSlots * 1.5}rem`;
     
     const userName = event.eventType === 'reservation' ? event.userName : event.userEmail.split('@')[0];
+    const summaryText = event.eventType === 'reservation'
+      ? event.summary?.replace(/[\r\n]+/g, ' ').trim()
+      : '';
+    const titleText = summaryText ? `(${summaryText})` : userName;
     const timeText = `${format(event.start, 'HH:mm')} - ${format(event.end, 'HH:mm')}`;
     
     return (
@@ -485,7 +489,7 @@ const EventButton = ({ event, currentDay, onClick, className }: { event: Combine
             className={cn("absolute w-full text-left p-1 rounded-lg text-white text-xs leading-tight transition-colors z-10", className)}
             style={{ top, height }}
         >
-            <p className="font-bold truncate">{userName}</p>
+            <p className="font-bold truncate">{titleText}</p>
             <p className="truncate text-primary-foreground/80">{timeText}</p>
         </button>
     );
