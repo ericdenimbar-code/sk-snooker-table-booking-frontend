@@ -3,10 +3,15 @@
  * 新增控制手段時在此登記；日曆寫入只接收呼叫端傳入的標題，不綁定單一項目。
  */
 export const DOOR_MULTI_CONTROLS = {
-  /** 預留時段 */
+  /**
+   * 預留時段。
+   * 預訂頁不能選正在進行的半小時，所以日曆開始時間提前，讓接近當下的下一格可以立刻生效。
+   * 結束時間仍用時段正點，避免拉長到下一格。
+   */
   reservedSlot: {
     key: 'reserved-slot',
     title: 'MEETING',
+    calendarStartLeadMinutes: 18,
   },
 } as const;
 

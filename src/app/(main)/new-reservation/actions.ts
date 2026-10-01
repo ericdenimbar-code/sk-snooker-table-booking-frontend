@@ -177,9 +177,10 @@ async function syncReservedSlotsToDoorMultiCalendar(
             toDeleteEventKeys: toDelete.map((event) => event.eventKey),
             toCreate: toCreate.map((event) => {
                 const period = getAdminSlotPeriodHkt(plan.date, event.start, event.end);
+                const leadMs = action.calendarStartLeadMinutes * 60 * 1000;
                 return {
                     eventKey: event.eventKey,
-                    startIso: period.validFrom.toISOString(),
+                    startIso: new Date(period.validFrom.getTime() - leadMs).toISOString(),
                     endIso: period.validUntil.toISOString(),
                     description: `預留時段 ${plan.date} ${event.start}-${event.end}`,
                 };
