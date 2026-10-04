@@ -22,7 +22,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { useToast } from '@/hooks/use-toast';
 import type { Reservation, TemporaryAccess } from '@/types';
-import { cancelReservation, getAdminBookingsInitialData, updateReservationSummary } from '@/app/admin/bookings/actions';
+import { cancelReservation, getAdminBookingsInitialData, updateAdminReservation, updateReservationSummary } from '@/app/admin/bookings/actions';
 import { getUserById } from '@/app/admin/users/actions';
 import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions';
 import { cn } from '@/lib/utils';
@@ -76,6 +76,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
   const [tempAccesses, setTempAccesses] = useState<TemporaryAccess[]>(initialTempAccess);
   const [selectedEvent, setSelectedEvent] = useState<CombinedEvent | null>(null);
   const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
+  const [isEditOpen, setIsEditOpen] = useState(false);
   const [isQrDialogOpen, setIsQrDialogOpen] = useState(false);
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string>('');
   const [isLoadingQr, setIsLoadingQr] = useState(false);
@@ -436,12 +437,27 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
         onOpenChange={handleCloseDetailDialog}
         onCancel={handleOpenCancelDialog}
         onShowQr={handleShowQrCode}
+        onEdit={() => setIsEditOpen(true)}
         onSummarySaved={(id, summary) => {
           setReservations((prev) => prev.map((res) => (res.id === id ? { ...res, summary } : res)));
           setSelectedEvent((prev) => (prev && prev.id === id ? { ...prev, summary } : prev));
         }}
       />
       <CancellationDialog event={selectedEvent} open={isCancelDialogOpen} onOpenChange={setIsCancelDialogOpen} isSubmitting={isSubmitting} onConfirm={handleCancellation} />
+      <EditBookingDialog
+        event={selectedEvent}
+        open={isEditOpen}
+        onOpenChange={setIsEditOpen}
+        onSaved={(reservation) => {
+          setReservations((prev) => prev.map((res) => (res.id === reservation.id ? reservation : res)));
+          setSelectedEvent((prev) => {
+            if (!prev || prev.id !== reservation.id || prev.eventType !== 'reservation') return prev;
+            const start = getHktBookingStartUtc(reservation.date, reservation.startTime);
+            const end = getAdminSlotPeriodHkt(reservation.date, reservation.startTime, reservation.endTime).validUntil;
+            return { ...prev, ...reservation, start, end, isOvernight: !isSameHktDay(start, end) };
+          });
+        }}
+      />
       <QrCodeDialog event={selectedEvent} open={isQrDialogOpen} onOpenChange={setIsQrDialogOpen} isLoading={isLoadingQr} qrCodeDataUrl={qrCodeDataUrl} />
     </>
   );
@@ -495,7 +511,7 @@ const EventButton = ({ event, currentDay, onClick, className }: { event: Combine
     );
 };
 
-const EventDetailDialog = ({ event, open, onOpenChange, onCancel, onShowQr, onSummarySaved }: { event: CombinedEvent | null, open: boolean, onOpenChange: (open: boolean) => void, onCancel: () => void, onShowQr: (event: CombinedEvent) => void, onSummarySaved: (id: string, summary: string) => void }) => {
+const EventDetailDialog = ({ event, open, onOpenChange, onCancel, onShowQr, onEdit, onSummarySaved }: { event: CombinedEvent | null, open: boolean, onOpenChange: (open: boolean) => void, onCancel: () => void, onShowQr: (event: CombinedEvent) => void, onEdit: () => void, onSummarySaved: (id: string, summary: string) => void }) => {
   const { toast } = useToast();
   const [tempAccessProfile, setTempAccessProfile] = useState<{ name: string; phone: string } | null>(null);
   const [isLoadingProfile, setIsLoadingProfile] = useState(false);
@@ -592,6 +608,9 @@ const EventDetailDialog = ({ event, open, onOpenChange, onCancel, onShowQr, onSu
             )}
 
              <div className="border-t pt-4 mt-4 flex flex-wrap gap-2 justify-end">
+                {isReservation && event.end.getTime() > Date.now() && (
+                  <Button variant="outline" size="sm" onClick={onEdit}>修改預訂</Button>
+                )}
                 <Button variant="outline" size="sm" onClick={() => onShowQr(event)}><QrCodeIcon className="mr-2 h-4 w-4" />QR Code</Button>
                 <Button variant="destructive" size="sm" onClick={onCancel}>
                     <Ban className="mr-2 h-4 w-4"/>
@@ -625,6 +644,108 @@ const EventDetailDialog = ({ event, open, onOpenChange, onCancel, onShowQr, onSu
       </Dialog>
     )}
     </>
+  );
+};
+
+const HALF_HOUR_OPTIONS = Array.from({ length: 48 }, (_, i) => {
+  const hours = Math.floor(i / 2);
+  const minutes = (i % 2) * 30;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+});
+
+const EditBookingDialog = ({ event, open, onOpenChange, onSaved }: { event: CombinedEvent | null, open: boolean, onOpenChange: (open: boolean) => void, onSaved: (reservation: Reservation) => void }) => {
+  const { toast } = useToast();
+  const [roomId, setRoomId] = useState<'1' | '2'>('1');
+  const [startTime, setStartTime] = useState('10:00');
+  const [endTime, setEndTime] = useState('11:00');
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+
+  useEffect(() => {
+    if (!open || !event || event.eventType !== 'reservation') return;
+    setRoomId(event.roomId === '2' ? '2' : '1');
+    setStartTime(event.startTime);
+    setEndTime(event.endTime);
+    setErrorMessage('');
+  }, [open, event]);
+
+  if (!event || event.eventType !== 'reservation') return null;
+
+  const save = async () => {
+    setIsSaving(true);
+    setErrorMessage('');
+    try {
+      const raw = localStorage.getItem('user');
+      const adminUserId = raw ? (JSON.parse(raw) as { id?: string }).id : '';
+      if (!adminUserId) {
+        setErrorMessage('找不到管理員身分，請重新登入。');
+        return;
+      }
+      const result = await updateAdminReservation({
+        adminUserId,
+        reservationId: event.id,
+        roomId,
+        startTime,
+        endTime,
+      });
+      if (!result.success || !result.reservation) {
+        const message = result.error || '無法修改預訂。';
+        setErrorMessage(message);
+        toast({ variant: 'destructive', title: '無法修改預訂', description: message });
+        return;
+      }
+      onSaved(result.reservation);
+      toast({
+        title: '預訂已更新',
+        description: result.calendarWarning || '枱號、時間與入門行事曆已更新，並已通知客戶。',
+        variant: result.calendarWarning ? 'destructive' : 'default',
+      });
+      onOpenChange(false);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>修改預訂</DialogTitle>
+          <DialogDescription>
+            {event.date}　{event.id}。結束時間早於開始時間代表跨至翌日。入門通行時段為開始前 25 分鐘至結束後 15 分鐘。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-3">
+          <label className="grid gap-1 text-sm">
+            枱號
+            <select className="h-10 rounded-md border bg-background px-3" value={roomId} onChange={(e) => setRoomId(e.target.value as '1' | '2')}>
+              <option value="1">枱號 1</option>
+              <option value="2">枱號 2</option>
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm">
+            開始時間
+            <select className="h-10 rounded-md border bg-background px-3" value={startTime} onChange={(e) => setStartTime(e.target.value)}>
+              {HALF_HOUR_OPTIONS.map((time) => <option key={`start-${time}`} value={time}>{time}</option>)}
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm">
+            結束時間
+            <select className="h-10 rounded-md border bg-background px-3" value={endTime} onChange={(e) => setEndTime(e.target.value)}>
+              {HALF_HOUR_OPTIONS.map((time) => <option key={`end-${time}`} value={time}>{time}</option>)}
+            </select>
+          </label>
+          {errorMessage && <p className="text-sm text-destructive">{errorMessage}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>返回</Button>
+          <Button onClick={() => void save()} disabled={isSaving}>
+            {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            確定修改
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 };
 

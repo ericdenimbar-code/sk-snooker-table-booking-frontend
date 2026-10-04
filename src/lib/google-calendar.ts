@@ -53,7 +53,11 @@ const auth = new google.auth.JWT({
 const calendar = google.calendar({ version: 'v3', auth });
 
 type RoomId = '1' | '2' | 'door_control';
-type Slot = '1A' | '1B' | '2A' | '2B';
+export type Slot = '1A' | '1B' | '2A' | '2B';
+
+/** 入門行事曆（1A/1B/2A/2B）相對實際預訂時段的緩衝。主枱號日曆不加緩衝。 */
+export const DOOR_ACCESS_LEAD_MINUTES = 25;
+export const DOOR_ACCESS_TRAIL_MINUTES = 15;
 
 type EventDetails = {
     summary: string;
@@ -71,34 +75,59 @@ type EventDetails = {
  * @param end The end time of the booking.
  * @returns The slot ID ('1A', '1B', '2A', '2B') or null if none is available.
  */
-async function findAvailableSlot(roomId: '1' | '2', start: Date, end: Date): Promise<Slot | null> {
+async function doorWindowIsFree(
+    calendarId: string,
+    start: Date,
+    end: Date,
+    excludeGoogleEventIds: Set<string>,
+): Promise<boolean> {
+    const response = await calendar.events.list({
+        calendarId,
+        timeMin: start.toISOString(),
+        timeMax: end.toISOString(),
+        singleEvents: true,
+        maxResults: 20,
+    });
+    const items = response.data.items ?? [];
+    return !items.some((item) => item.id && !excludeGoogleEventIds.has(item.id));
+}
+
+async function findAvailableSlot(
+    roomId: '1' | '2',
+    start: Date,
+    end: Date,
+    excludeGoogleEventIds: string[] = [],
+): Promise<Slot | null> {
     const slots: Slot[] = roomId === '1' ? ['1A', '1B'] : ['2A', '2B'];
+    const excluded = new Set(excludeGoogleEventIds);
     
     for (const slot of slots) {
         const calendarId = getCalendarIdBySlot(slot);
         if (!calendarId) continue;
 
         try {
-            const response = await calendar.events.list({
-                calendarId: calendarId,
-                timeMin: start.toISOString(),
-                timeMax: end.toISOString(),
-                singleEvents: true,
-                maxResults: 1,
-            });
-
-            if (!response.data.items || response.data.items.length === 0) {
-                // This slot is free, return it
-                return slot;
-            }
+            const free = await doorWindowIsFree(calendarId, start, end, excluded);
+            if (free) return slot;
         } catch (error) {
             console.error(`Error checking availability for slot ${slot}:`, error);
-            // If we can't check a slot, assume it's busy and try the next one.
         }
     }
 
-    // No free slot found
     return null;
+}
+
+/** 目標枱先用 A，A 的緩衝被佔用時改配 B。兩者都佔用則無法分配。 */
+export async function allocateDoorAccessSlot(
+    roomId: '1' | '2',
+    entryStart: Date,
+    entryEnd: Date,
+    excludeGoogleEventIds: string[] = [],
+): Promise<{ slot: Slot; calendarId: string } | null> {
+    const slot = await findAvailableSlot(roomId, entryStart, entryEnd, excludeGoogleEventIds);
+    if (!slot) return null;
+    const calendarId = getCalendarIdBySlot(slot);
+    if (!calendarId) return null;
+    return { slot, calendarId };
 }
 
 /**
@@ -348,8 +377,8 @@ export async function createGoogleCalendarEvent(
         }
     }
     
-    const doorControlStart = isTempAccess ? bookingStart : sub(bookingStart, { minutes: 15 });
-    const doorControlEnd = isTempAccess ? bookingEnd : add(bookingEnd, { minutes: 15 });
+    const doorControlStart = isTempAccess ? bookingStart : sub(bookingStart, { minutes: DOOR_ACCESS_LEAD_MINUTES });
+    const doorControlEnd = isTempAccess ? bookingEnd : add(bookingEnd, { minutes: DOOR_ACCESS_TRAIL_MINUTES });
 
     let availableSlot = await findAvailableSlot(roomIdForSlotFinding, doorControlStart, doorControlEnd);
     
@@ -395,6 +424,79 @@ export async function createGoogleCalendarEvent(
     }
     
     return { ok: false };
+}
+
+/**
+ * 修改預訂：先在新枱號與入門日曆建立活動，成功後再刪除舊活動。
+ * 兩本日曆的標題都使用該預訂的 QR Code 字串。
+ */
+export async function recreateReservationCalendarEvents(params: {
+    previous: Reservation;
+    next: Pick<Reservation, 'id' | 'roomId' | 'roomName' | 'date' | 'startTime' | 'endTime' | 'userName' | 'userPhone' | 'qrSecret'>;
+    doorSlot: Slot;
+}): Promise<{ ok: true; googleCalendarEventId: string; doorAccessCalendarId: string } | { ok: false; error: string }> {
+    if (!hasGoogleConfig) {
+        return { ok: false, error: 'Google Calendar 未設定，無法更新門禁行事曆。' };
+    }
+    if (!params.next.qrSecret) {
+        return { ok: false, error: '此預訂沒有 QR Code，無法更新門禁行事曆。' };
+    }
+
+    const roomId = params.next.roomId as '1' | '2';
+    const mainCalendarId = getCalendarIdBySlot(roomId);
+    const doorCalendarId = getCalendarIdBySlot(params.doorSlot);
+    if (!mainCalendarId || !doorCalendarId) {
+        return { ok: false, error: '找不到目標枱號或入門行事曆。' };
+    }
+
+    const bookingStart = parseISO(`${params.next.date}T${params.next.startTime}:00+08:00`);
+    let bookingEnd = parseISO(`${params.next.date}T${params.next.endTime}:00+08:00`);
+    if (bookingEnd <= bookingStart) bookingEnd = add(bookingEnd, { days: 1 });
+    const doorStart = sub(bookingStart, { minutes: DOOR_ACCESS_LEAD_MINUTES });
+    const doorEnd = add(bookingEnd, { minutes: DOOR_ACCESS_TRAIL_MINUTES });
+    const rawEventKey = `${params.next.id}:u:${Date.now()}`;
+    const description = `Ref: ${params.next.id}\nPhone: ${params.next.userPhone || 'N/A'}\nSlot: ${params.doorSlot}`;
+
+    const mainCreated = await createEvent(mainCalendarId, {
+        summary: params.next.qrSecret,
+        description,
+        start: bookingStart.toISOString(),
+        end: bookingEnd.toISOString(),
+        eventId: rawEventKey,
+    });
+    if (!mainCreated) {
+        return { ok: false, error: '無法在新枱號行事曆建立預訂。' };
+    }
+
+    const doorCreated = await createEvent(doorCalendarId, {
+        summary: params.next.qrSecret,
+        description,
+        start: doorStart.toISOString(),
+        end: doorEnd.toISOString(),
+        eventId: rawEventKey,
+    });
+    if (!doorCreated) {
+        try {
+            await calendar.events.delete({
+                calendarId: mainCalendarId,
+                eventId: getGoogleCalendarEventId(rawEventKey),
+            });
+        } catch (error: unknown) {
+            console.warn('[Google Calendar] rollback of new main event failed', error);
+        }
+        return { ok: false, error: `無法在入門行事曆 ${params.doorSlot} 建立通行時段。` };
+    }
+
+    const deleted = await deleteGoogleCalendarEventsForReservation(params.previous);
+    if (!deleted.success) {
+        console.warn(`[Google Calendar] old events for ${params.next.id} were not fully removed`, deleted.errors);
+    }
+
+    return {
+        ok: true,
+        googleCalendarEventId: getGoogleCalendarEventId(rawEventKey),
+        doorAccessCalendarId: doorCalendarId,
+    };
 }
 
 /**

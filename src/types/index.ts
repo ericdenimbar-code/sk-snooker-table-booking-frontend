@@ -34,6 +34,8 @@ export type Reservation = {
   googleCalendarEventId?: string;
   /** Door control slot used when the booking was created */
   googleCalendarDoorSlot?: '1A' | '1B' | '2A' | '2B';
+  /** 入門行事曆 ID（1A/1B/2A/2B 對應的 Google Calendar） */
+  doorAccessCalendarId?: string;
   /** ISO timestamp when the booking was cancelled */
   cancelledAt?: string;
   /** Last known Google Calendar delete sync state */

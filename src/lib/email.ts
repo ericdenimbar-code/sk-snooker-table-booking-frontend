@@ -213,6 +213,69 @@ export async function sendQrCodeEmail(
     }
 }
 
+export async function sendBookingChangeEmail(params: {
+    reservation: Reservation;
+    roomLabel: string;
+    entryStart: Date;
+    entryEnd: Date;
+    qrCodeDataUrl: string;
+    contactInfo: ContactInfo;
+}): Promise<boolean> {
+    if (!transporter) {
+        console.error('Cannot send booking change email: Email service is not configured.');
+        return false;
+    }
+
+    const qrCodeCid = `qrcode_${params.reservation.id}@sk-booking.com`;
+    const base64Data = params.qrCodeDataUrl.split(';base64,').pop();
+    if (!base64Data) return false;
+
+    const entryFrom = formatInTimeZone(params.entryStart, 'Asia/Hong_Kong', 'yyyy-MM-dd HH:mm');
+    const entryUntil = formatInTimeZone(params.entryEnd, 'Asia/Hong_Kong', 'yyyy-MM-dd HH:mm');
+
+    try {
+        await transporter.sendMail({
+            from: `"${EMAIL_FROM_NAME}" <${EMAIL_SERVER_USER}>`,
+            to: params.reservation.userEmail,
+            subject: `您在 ${EMAIL_FROM_NAME} 的預訂資料已變更`,
+            html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+                    <h2>預訂資料變更通知</h2>
+                    <p>您好 ${params.reservation.userName}，</p>
+                    <p>管理員已更新您的預訂，請以下方最新資料為準。</p>
+                    <ul>
+                        <li><strong>參考編號:</strong> ${params.reservation.id}</li>
+                        <li><strong>枱號:</strong> ${params.roomLabel}</li>
+                        <li><strong>日期:</strong> ${params.reservation.date}</li>
+                        <li><strong>預訂時間:</strong> ${params.reservation.startTime} - ${params.reservation.endTime}</li>
+                        <li><strong>QR Code 可通行時段:</strong> ${entryFrom} 至 ${entryUntil}</li>
+                    </ul>
+                    <p>請使用以下 QR Code 於可通行時段內掃描門口裝置。</p>
+                    <div style="text-align: center; margin: 20px 0;">
+                        <img src="cid:${qrCodeCid}" alt="Reservation QR Code" style="width: 250px; height: 250px;" />
+                    </div>
+                    <p>
+                        <strong>${EMAIL_FROM_NAME}</strong><br>
+                        電話: ${params.contactInfo.whatsapp}<br>
+                        電郵: ${params.contactInfo.email}<br>
+                        地址: ${params.contactInfo.address}
+                    </p>
+                </div>
+            `,
+            attachments: [{
+                filename: 'qrcode.png',
+                content: base64Data,
+                encoding: 'base64',
+                cid: qrCodeCid,
+            }],
+        });
+        return true;
+    } catch (error) {
+        console.error(`Failed to send booking change email for ${params.reservation.id}:`, error);
+        return false;
+    }
+}
+
 // New function to send top-up confirmation email
 const TOP_UP_AMOUNT_DISCREPANCY_NOTICE =
     '請注意：此記錄與要求金額有出入，我們以最後收到轉帳之金額作最後的充值額。';
