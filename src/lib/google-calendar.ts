@@ -51,6 +51,7 @@ const auth = new google.auth.JWT({
 
 // 建立 Calendar API 實例
 const calendar = google.calendar({ version: 'v3', auth });
+let lastCreateEventError = '';
 
 type RoomId = '1' | '2' | 'door_control';
 export type Slot = '1A' | '1B' | '2A' | '2B';
@@ -75,21 +76,34 @@ type EventDetails = {
  * @param end The end time of the booking.
  * @returns The slot ID ('1A', '1B', '2A', '2B') or null if none is available.
  */
+function eventBelongsToReservation(
+    item: { id?: string | null; description?: string | null; extendedProperties?: { private?: Record<string, string> | null } | null },
+    reservationId: string | undefined,
+    excludeGoogleEventIds: Set<string>,
+): boolean {
+    if (item.id && excludeGoogleEventIds.has(item.id)) return true;
+    const requestId = item.extendedProperties?.private?.door_access_request_id ?? '';
+    if (reservationId && (requestId === reservationId || requestId.startsWith(`${reservationId}:`))) return true;
+    if (reservationId && (item.description ?? '').includes(reservationId)) return true;
+    return false;
+}
+
 async function doorWindowIsFree(
     calendarId: string,
     start: Date,
     end: Date,
     excludeGoogleEventIds: Set<string>,
+    reservationId?: string,
 ): Promise<boolean> {
     const response = await calendar.events.list({
         calendarId,
         timeMin: start.toISOString(),
         timeMax: end.toISOString(),
         singleEvents: true,
-        maxResults: 20,
+        maxResults: 50,
     });
     const items = response.data.items ?? [];
-    return !items.some((item) => item.id && !excludeGoogleEventIds.has(item.id));
+    return !items.some((item) => !eventBelongsToReservation(item, reservationId, excludeGoogleEventIds));
 }
 
 async function findAvailableSlot(
@@ -97,22 +111,32 @@ async function findAvailableSlot(
     start: Date,
     end: Date,
     excludeGoogleEventIds: string[] = [],
+    reservationId?: string,
 ): Promise<Slot | null> {
     const slots: Slot[] = roomId === '1' ? ['1A', '1B'] : ['2A', '2B'];
     const excluded = new Set(excludeGoogleEventIds);
+    const problems: string[] = [];
     
     for (const slot of slots) {
         const calendarId = getCalendarIdBySlot(slot);
-        if (!calendarId) continue;
+        if (!calendarId) {
+            problems.push(`${slot} 未設定行事曆 ID`);
+            continue;
+        }
 
         try {
-            const free = await doorWindowIsFree(calendarId, start, end, excluded);
+            const free = await doorWindowIsFree(calendarId, start, end, excluded, reservationId);
             if (free) return slot;
         } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            problems.push(`${slot}: ${message}`);
             console.error(`Error checking availability for slot ${slot}:`, error);
         }
     }
 
+    if (problems.length > 0 && problems.length === slots.length) {
+        throw new Error(problems.join('；'));
+    }
     return null;
 }
 
@@ -122,8 +146,9 @@ export async function allocateDoorAccessSlot(
     entryStart: Date,
     entryEnd: Date,
     excludeGoogleEventIds: string[] = [],
+    reservationId?: string,
 ): Promise<{ slot: Slot; calendarId: string } | null> {
-    const slot = await findAvailableSlot(roomId, entryStart, entryEnd, excludeGoogleEventIds);
+    const slot = await findAvailableSlot(roomId, entryStart, entryEnd, excludeGoogleEventIds, reservationId);
     if (!slot) return null;
     const calendarId = getCalendarIdBySlot(slot);
     if (!calendarId) return null;
@@ -201,8 +226,10 @@ async function createEvent(calendarId: string, details: EventDetails): Promise<{
 
         if (response.data) {
             console.log(`✅ Google Calendar event created: id=${response.data.id} calendar=${calendarId}`);
+            lastCreateEventError = '';
             return { eventId: response.data.id!, eventLink: response.data.htmlLink ?? '' };
         }
+        lastCreateEventError = 'Google Calendar 沒有回傳新建活動。';
         console.error('[Google Calendar] insert returned empty response.data', { calendarId, googleEventId });
         return null;
     } catch (error: unknown) {
@@ -216,9 +243,11 @@ async function createEvent(calendarId: string, details: EventDetails): Promise<{
 
         if (err.code === 409) {
             console.warn(`[Google Calendar] event already exists (409): googleEventId=${googleEventId}`, apiError);
+            lastCreateEventError = '';
             return { eventId: googleEventId, eventLink: '' };
         }
 
+        lastCreateEventError = typeof apiError === 'string' ? apiError : err.message ?? 'Google Calendar 建立活動失敗。';
         console.error(`❌ Google Calendar events.insert failed:`, {
             calendarId,
             googleEventId,
@@ -465,7 +494,7 @@ export async function recreateReservationCalendarEvents(params: {
         eventId: rawEventKey,
     });
     if (!mainCreated) {
-        return { ok: false, error: '無法在新枱號行事曆建立預訂。' };
+        return { ok: false, error: lastCreateEventError || '無法在新枱號行事曆建立預訂。' };
     }
 
     const doorCreated = await createEvent(doorCalendarId, {
@@ -484,7 +513,7 @@ export async function recreateReservationCalendarEvents(params: {
         } catch (error: unknown) {
             console.warn('[Google Calendar] rollback of new main event failed', error);
         }
-        return { ok: false, error: `無法在入門行事曆 ${params.doorSlot} 建立通行時段。` };
+        return { ok: false, error: lastCreateEventError || `無法在入門行事曆 ${params.doorSlot} 建立通行時段。` };
     }
 
     const deleted = await deleteGoogleCalendarEventsForReservation(params.previous);

@@ -667,11 +667,11 @@ const EditBookingDialog = ({ event, open, onOpenChange, onSaved }: { event: Comb
     setStartTime(event.startTime);
     setEndTime(event.endTime);
     setErrorMessage('');
-  }, [open, event]);
+  }, [open, event?.id]);
 
   if (!event || event.eventType !== 'reservation') return null;
 
-  const save = async () => {
+  const save = async (nextRoomId: '1' | '2', nextStart: string, nextEnd: string) => {
     setIsSaving(true);
     setErrorMessage('');
     try {
@@ -684,9 +684,9 @@ const EditBookingDialog = ({ event, open, onOpenChange, onSaved }: { event: Comb
       const result = await updateAdminReservation({
         adminUserId,
         reservationId: event.id,
-        roomId,
-        startTime,
-        endTime,
+        roomId: nextRoomId,
+        startTime: nextStart,
+        endTime: nextEnd,
       });
       if (!result.success || !result.reservation) {
         const message = result.error || '無法修改預訂。';
@@ -701,6 +701,10 @@ const EditBookingDialog = ({ event, open, onOpenChange, onSaved }: { event: Comb
         variant: result.calendarWarning ? 'destructive' : 'default',
       });
       onOpenChange(false);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : '修改預訂時發生錯誤。';
+      setErrorMessage(message);
+      toast({ variant: 'destructive', title: '無法修改預訂', description: message });
     } finally {
       setIsSaving(false);
     }
@@ -715,35 +719,47 @@ const EditBookingDialog = ({ event, open, onOpenChange, onSaved }: { event: Comb
             {event.date}　{event.id}。結束時間早於開始時間代表跨至翌日。入門通行時段為開始前 25 分鐘至結束後 15 分鐘。
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-3">
+        <form
+          className="grid gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const data = new FormData(e.currentTarget);
+            const nextRoom = data.get('roomId') === '2' ? '2' : '1';
+            const nextStart = String(data.get('startTime') ?? '');
+            const nextEnd = String(data.get('endTime') ?? '');
+            void save(nextRoom, nextStart, nextEnd);
+          }}
+        >
+          {errorMessage && (
+            <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{errorMessage}</p>
+          )}
           <label className="grid gap-1 text-sm">
             枱號
-            <select className="h-10 rounded-md border bg-background px-3" value={roomId} onChange={(e) => setRoomId(e.target.value as '1' | '2')}>
+            <select name="roomId" className="h-10 rounded-md border bg-background px-3" value={roomId} onChange={(e) => setRoomId(e.target.value as '1' | '2')}>
               <option value="1">枱號 1</option>
               <option value="2">枱號 2</option>
             </select>
           </label>
           <label className="grid gap-1 text-sm">
             開始時間
-            <select className="h-10 rounded-md border bg-background px-3" value={startTime} onChange={(e) => setStartTime(e.target.value)}>
+            <select name="startTime" className="h-10 rounded-md border bg-background px-3" value={startTime} onChange={(e) => setStartTime(e.target.value)}>
               {HALF_HOUR_OPTIONS.map((time) => <option key={`start-${time}`} value={time}>{time}</option>)}
             </select>
           </label>
           <label className="grid gap-1 text-sm">
             結束時間
-            <select className="h-10 rounded-md border bg-background px-3" value={endTime} onChange={(e) => setEndTime(e.target.value)}>
+            <select name="endTime" className="h-10 rounded-md border bg-background px-3" value={endTime} onChange={(e) => setEndTime(e.target.value)}>
               {HALF_HOUR_OPTIONS.map((time) => <option key={`end-${time}`} value={time}>{time}</option>)}
             </select>
           </label>
-          {errorMessage && <p className="text-sm text-destructive">{errorMessage}</p>}
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>返回</Button>
-          <Button onClick={() => void save()} disabled={isSaving}>
-            {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            確定修改
-          </Button>
-        </DialogFooter>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>返回</Button>
+            <Button type="submit" disabled={isSaving}>
+              {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              確定修改
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

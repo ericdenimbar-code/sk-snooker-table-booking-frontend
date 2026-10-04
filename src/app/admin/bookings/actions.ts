@@ -200,8 +200,20 @@ export async function updateReservationSummary(
   }
 }
 
-function reservationInterval(date: string, startTime: string, endTime: string): { start: Date; end: Date } {
-    return getAdminSlotPeriodHkt(date, startTime, endTime);
+function reservationInterval(date: string, startTime: string, endTime: string): { start: Date; end: Date } | null {
+    if (!date || !startTime || !endTime || !date.includes('-') || !startTime.includes(':') || !endTime.includes(':')) {
+        return null;
+    }
+    try {
+        return getAdminSlotPeriodHkt(date, startTime, endTime);
+    } catch {
+        return null;
+    }
+}
+
+function toClientReservation(reservation: Reservation): Reservation {
+    const { expiresAt: _expiresAt, ...rest } = reservation;
+    return JSON.parse(JSON.stringify(rest)) as Reservation;
 }
 
 function intervalsOverlap(a: { start: Date; end: Date }, b: { start: Date; end: Date }): boolean {
@@ -209,6 +221,22 @@ function intervalsOverlap(a: { start: Date; end: Date }, b: { start: Date; end: 
 }
 
 export async function updateAdminReservation(params: {
+    adminUserId: string;
+    reservationId: string;
+    roomId: '1' | '2';
+    startTime: string;
+    endTime: string;
+}): Promise<ServerActionResponse & { reservation?: Reservation }> {
+    try {
+        return await updateAdminReservationInner(params);
+    } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        console.error('[updateAdminReservation]', message);
+        return { success: false, error: message || '修改預訂時發生錯誤。' };
+    }
+}
+
+async function updateAdminReservationInner(params: {
     adminUserId: string;
     reservationId: string;
     roomId: '1' | '2';
@@ -240,11 +268,13 @@ export async function updateAdminReservation(params: {
     if (current.status === 'Cancelled') return { success: false, error: '已取消的預訂不能修改。' };
 
     const currentInterval = reservationInterval(current.date, current.startTime, current.endTime);
+    if (!currentInterval) return { success: false, error: '這筆預訂的日期或時間格式不正確，無法修改。' };
     if (currentInterval.end.getTime() <= Date.now()) {
         return { success: false, error: '此預訂已結束，不能修改。' };
     }
 
     const nextInterval = reservationInterval(current.date, params.startTime, params.endTime);
+    if (!nextInterval) return { success: false, error: '開始或結束時間不正確。' };
     if (nextInterval.end.getTime() <= Date.now()) {
         return { success: false, error: '新的結束時間必須晚於現在。' };
     }
@@ -260,6 +290,7 @@ export async function updateAdminReservation(params: {
         .find((other) => {
             if (other.id === current.id || other.roomId !== params.roomId || other.status === 'Cancelled') return false;
             const otherInterval = reservationInterval(other.date, other.startTime, other.endTime);
+            if (!otherInterval) return false;
             return intervalsOverlap(nextInterval, otherInterval);
         });
     if (conflict) {
@@ -276,7 +307,7 @@ export async function updateAdminReservation(params: {
         current.googleCalendarEventId,
         getGoogleCalendarEventId(current.id),
     ].filter((id): id is string => Boolean(id));
-    const door = await allocateDoorAccessSlot(params.roomId, entryStart, entryEnd, excludeIds);
+    const door = await allocateDoorAccessSlot(params.roomId, entryStart, entryEnd, excludeIds, current.id);
     if (!door) {
         return {
             success: false,
@@ -359,7 +390,7 @@ export async function updateAdminReservation(params: {
         calendarWarning = '預訂已更新，但變更通知電郵未能送出。';
     }
 
-    return { success: true, reservation: updated, calendarWarning };
+    return { success: true, reservation: toClientReservation(updated), calendarWarning };
 }
 
 export async function resendConfirmationEmail(qrSecret: string): Promise<ServerActionResponse> {
