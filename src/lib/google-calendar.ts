@@ -457,7 +457,7 @@ export async function createGoogleCalendarEvent(
 
 /**
  * 修改預訂：先在新枱號與入門日曆建立活動，成功後再刪除舊活動。
- * 兩本日曆的標題都使用該預訂的 QR Code 字串。
+ * 枱號日曆標題用預訂者名稱；1A／1B／2A／2B 標題才用 QR Code 字串。
  */
 export async function recreateReservationCalendarEvents(params: {
     previous: Reservation;
@@ -484,11 +484,10 @@ export async function recreateReservationCalendarEvents(params: {
     const doorStart = sub(bookingStart, { minutes: DOOR_ACCESS_LEAD_MINUTES });
     const doorEnd = add(bookingEnd, { minutes: DOOR_ACCESS_TRAIL_MINUTES });
     const rawEventKey = `${params.next.id}:u:${Date.now()}`;
-    const description = `Ref: ${params.next.id}\nPhone: ${params.next.userPhone || 'N/A'}\nSlot: ${params.doorSlot}`;
 
     const mainCreated = await createEvent(mainCalendarId, {
-        summary: params.next.qrSecret,
-        description,
+        summary: params.next.userName,
+        description: `Ref: ${params.next.id}\nPhone: ${params.next.userPhone || 'N/A'}`,
         start: bookingStart.toISOString(),
         end: bookingEnd.toISOString(),
         eventId: rawEventKey,
@@ -499,7 +498,7 @@ export async function recreateReservationCalendarEvents(params: {
 
     const doorCreated = await createEvent(doorCalendarId, {
         summary: params.next.qrSecret,
-        description,
+        description: `User: ${params.next.userName} | Ref: ${params.next.id} | Slot: ${params.doorSlot}`,
         start: doorStart.toISOString(),
         end: doorEnd.toISOString(),
         eventId: rawEventKey,
