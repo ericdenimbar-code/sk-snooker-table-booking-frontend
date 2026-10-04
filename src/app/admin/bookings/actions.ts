@@ -205,7 +205,9 @@ function reservationInterval(date: string, startTime: string, endTime: string): 
         return null;
     }
     try {
-        return getAdminSlotPeriodHkt(date, startTime, endTime);
+        const period = getAdminSlotPeriodHkt(date, startTime, endTime);
+        if (!period.validFrom || !period.validUntil) return null;
+        return { start: period.validFrom, end: period.validUntil };
     } catch {
         return null;
     }
