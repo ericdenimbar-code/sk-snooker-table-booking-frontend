@@ -18,6 +18,7 @@ import {
   ShieldAlert,
   Loader2,
   FileSpreadsheet,
+  Power,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -107,6 +108,14 @@ function AdminNav({ onLinkClick }: { onLinkClick?: () => void }) {
       >
         <FileSpreadsheet className="h-4 w-4" />
         匯出清單
+      </Link>
+      <Link
+        href="/admin/facility-shutdown"
+        className={cn(linkClass, isActive('/admin/facility-shutdown') && activeLinkClass)}
+        onClick={handleClick}
+      >
+        <Power className="h-4 w-4" />
+        離場關機
       </Link>
       <Link
         href="/admin/status"

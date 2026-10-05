@@ -13,6 +13,11 @@ export const DOOR_MULTI_CONTROLS = {
     title: 'MEETING',
     calendarStartLeadMinutes: 18,
   },
+  /** 離場關閉所有器材。標題只屬於這項控制，不套用到其他多重日曆項目。 */
+  closeAll: {
+    key: 'close-all',
+    title: 'CLOSEALL',
+  },
 } as const;
 
 export type DoorMultiEventRecord = {

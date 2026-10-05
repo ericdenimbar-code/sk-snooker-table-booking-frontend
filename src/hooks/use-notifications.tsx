@@ -10,6 +10,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { usePathname } from 'next/navigation';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { parseSiteNotificationsFromFirestore } from '@/lib/notifications/firestore';
@@ -88,6 +89,8 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [isPopupDismissed, setIsPopupDismissed] = useState(false);
   const [isTopBannerDismissed, setIsTopBannerDismissed] = useState(false);
   const { isLoggedIn, userRole } = useAuthUserState();
+  const pathname = usePathname();
+  const hideOnPublicShutdown = pathname === '/closedoor' || pathname.startsWith('/closedoor/');
 
   useEffect(() => {
     if (!db) {
@@ -129,8 +132,8 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     false
   );
 
-  const showPopup = popupEligible && !isPopupDismissed;
-  const showTopBanner = topBannerEligible && !isTopBannerDismissed;
+  const showPopup = popupEligible && !isPopupDismissed && !hideOnPublicShutdown;
+  const showTopBanner = topBannerEligible && !isTopBannerDismissed && !hideOnPublicShutdown;
 
   const dismissTopBanner = useCallback(() => {
     setIsTopBannerDismissed(true);

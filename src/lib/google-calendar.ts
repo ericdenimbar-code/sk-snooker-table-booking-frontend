@@ -4,6 +4,7 @@ import { google } from 'googleapis';
 import { db } from '@/lib/firebase-admin';
 import type { Reservation, TemporaryAccess } from '@/types';
 import { parseISO, isWithinInterval, add, sub, format } from 'date-fns';
+import { DOOR_MULTI_CONTROLS } from '@/lib/door-multi-controls';
 
 const HKT_TIMEZONE = 'Asia/Hong_Kong';
 
@@ -581,6 +582,22 @@ export async function applyDoorMultiControlCalendar(params: {
     return { ok: false, createdKeys, deletedKeys, error: errors.join('; ') };
   }
   return { ok: true, createdKeys, deletedKeys };
+}
+
+/** 離場關閉所有器材：多重門禁日曆一筆 CLOSEALL，由現在起 5 分鐘。 */
+export async function createFacilityCloseAllEvent(now = new Date()): Promise<{ ok: boolean; error?: string }> {
+  const end = new Date(now.getTime() + 5 * 60 * 1000);
+  const control = DOOR_MULTI_CONTROLS.closeAll;
+  return applyDoorMultiControlCalendar({
+    title: control.title,
+    toCreate: [{
+      eventKey: `door-multi:${control.key}:${now.getTime()}`,
+      startIso: now.toISOString(),
+      endIso: end.toISOString(),
+      description: '離場關閉所有器材',
+    }],
+    toDeleteEventKeys: [],
+  });
 }
 
 /**
