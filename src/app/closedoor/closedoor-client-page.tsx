@@ -46,7 +46,7 @@ export function ClosedoorClientPage() {
     void refreshAvailability();
     const timer = window.setInterval(() => {
       void refreshAvailability();
-    }, 20000);
+    }, 5000);
     return () => window.clearInterval(timer);
   }, [refreshAvailability]);
 

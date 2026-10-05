@@ -35,6 +35,7 @@ export type FacilityShutdownSettingsView = {
   startDate: string | null;
   endDate: string | null;
   windowLabel: string | null;
+  effectiveUntilIso: string | null;
   isActive: boolean;
   logs: FacilityShutdownLogView[];
 };
@@ -142,8 +143,54 @@ function windowLabelOf(doc: ShutdownDoc): string | null {
   return formatShutdownWindowLabel(doc.startDate, doc.startTime, doc.endDate, doc.endTime);
 }
 
+function windowHasEnded(doc: ShutdownDoc, now = Date.now()): boolean {
+  if (doc.effectiveUntilMs === null) return false;
+  return now >= doc.effectiveUntilMs + 60_000;
+}
+
+function clearedWindow(doc: ShutdownDoc): ShutdownDoc {
+  return {
+    ...doc,
+    passcode: null,
+    startTime: null,
+    endTime: null,
+    startDate: null,
+    endDate: null,
+    effectiveFromMs: null,
+    effectiveUntilMs: null,
+    isActive: false,
+    ticketHash: null,
+    ticketExpiresAtMs: null,
+    triggerLockUntilMs: null,
+  };
+}
+
+/** 時段已過、且沒有人按下關閉時，清掉這次設定。不寫入觸發紀錄。 */
+async function clearExpiredWindow(doc: ShutdownDoc): Promise<ShutdownDoc> {
+  const ref = docRef();
+  if (!ref || !windowIsConfigured(doc) || !windowHasEnded(doc)) return doc;
+  if (doc.triggerLockUntilMs && doc.triggerLockUntilMs > Date.now()) return doc;
+  await ref.set({
+    passcode: null,
+    startTime: null,
+    endTime: null,
+    startDate: null,
+    endDate: null,
+    effectiveFrom: null,
+    effectiveUntil: null,
+    isActive: false,
+    ticketHash: null,
+    ticketExpiresAt: null,
+    failedAttempts: 0,
+    lockedUntil: null,
+    triggerLockUntil: null,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  return clearedWindow(doc);
+}
+
 function toView(doc: ShutdownDoc, logs: FacilityShutdownLogView[]): FacilityShutdownSettingsView {
-  const active = windowIsConfigured(doc);
+  const active = windowIsConfigured(doc) && !windowHasEnded(doc);
   return {
     passcode: active ? doc.passcode : null,
     startTime: active ? doc.startTime : null,
@@ -151,6 +198,7 @@ function toView(doc: ShutdownDoc, logs: FacilityShutdownLogView[]): FacilityShut
     startDate: active ? doc.startDate : null,
     endDate: active ? doc.endDate : null,
     windowLabel: active ? windowLabelOf(doc) : null,
+    effectiveUntilIso: active && doc.effectiveUntilMs ? new Date(doc.effectiveUntilMs).toISOString() : null,
     isActive: active,
     logs,
   };
@@ -207,8 +255,9 @@ export async function getFacilityShutdownSettingsForAdmin(adminUserId: string): 
   if (!ref || !db) return { success: false, error: '後端資料庫未連接。' };
   const snap = await ref.get();
   await backfillLegacyTrigger(snap.data());
+  const current = await clearExpiredWindow(parseDoc(snap.data()));
   const logs = await readLogs();
-  return { success: true, settings: toView(parseDoc(snap.data()), logs) };
+  return { success: true, settings: toView(current, logs) };
 }
 
 async function backfillLegacyTrigger(data: FirebaseFirestore.DocumentData | undefined) {
@@ -377,7 +426,7 @@ export async function isFacilityShutdownWindowOpen(): Promise<boolean> {
   const ref = docRef();
   if (!ref) return false;
   const snap = await ref.get();
-  const current = parseDoc(snap.data());
+  const current = await clearExpiredWindow(parseDoc(snap.data()));
   return isOpenNow(current);
 }
 
@@ -387,6 +436,8 @@ export async function verifyFacilityShutdownPasscode(passcode: string): Promise<
   if (!/^\d{4}$/.test(passcode)) return { status: 'invalid' };
   if (!db) return { status: 'invalid' };
   const ref = docRef()!;
+  const existing = await ref.get();
+  await clearExpiredWindow(parseDoc(existing.data()));
 
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);

@@ -37,6 +37,7 @@ export function FacilityShutdownClientPage() {
   const [endTime, setEndTime] = useState('');
   const [isActive, setIsActive] = useState(false);
   const [windowLabel, setWindowLabel] = useState<string | null>(null);
+  const [effectiveUntilIso, setEffectiveUntilIso] = useState<string | null>(null);
   const [logs, setLogs] = useState<FacilityShutdownLogView[]>([]);
   const latestLogId = useRef<string | null>(null);
   const initialized = useRef(false);
@@ -46,6 +47,7 @@ export function FacilityShutdownClientPage() {
     isActiveRef.current = false;
     setIsActive(false);
     setWindowLabel(null);
+    setEffectiveUntilIso(null);
     setStartTime('');
     setEndTime('');
     setPasscode(randomPasscode());
@@ -58,6 +60,7 @@ export function FacilityShutdownClientPage() {
     setStartTime(settings.startTime ?? '');
     setEndTime(settings.endTime ?? '');
     setWindowLabel(settings.windowLabel);
+    setEffectiveUntilIso(settings.effectiveUntilIso);
   }, []);
 
   const applySettings = useCallback((settings: FacilityShutdownSettingsView, announceTrigger: boolean) => {
@@ -116,6 +119,18 @@ export function FacilityShutdownClientPage() {
       setLoading(false);
     }
   }, [load]);
+
+  useEffect(() => {
+    if (!isActive || !effectiveUntilIso) return;
+    const endsAt = new Date(effectiveUntilIso).getTime() + 60_000;
+    const delay = endsAt - Date.now();
+    if (delay <= 0) {
+      resetToPicker();
+      return;
+    }
+    const timer = window.setTimeout(() => resetToPicker(), delay);
+    return () => window.clearTimeout(timer);
+  }, [isActive, effectiveUntilIso, resetToPicker]);
 
   useEffect(() => {
     if (!adminUserId) return;
