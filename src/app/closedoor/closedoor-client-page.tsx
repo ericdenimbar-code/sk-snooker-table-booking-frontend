@@ -58,7 +58,7 @@ export function ClosedoorClientPage() {
       setSecondsLeft(left);
       if (left <= 0) {
         window.clearInterval(timer);
-        window.location.assign('/');
+        window.location.replace('/closedoor');
       }
     }, 250);
     return () => window.clearInterval(timer);

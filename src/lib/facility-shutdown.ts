@@ -3,10 +3,16 @@ import admin from 'firebase-admin';
 import { db } from '@/lib/firebase-admin';
 import { formatInTimeZone } from 'date-fns-tz';
 import { createFacilityCloseAllEvent } from '@/lib/google-calendar';
-import { isWithinShutdownWindow, parseHm } from '@/lib/facility-shutdown-window';
+import {
+  formatShutdownWindowLabel,
+  isWithinAbsoluteShutdownWindow,
+  parseHm,
+  shutdownWindowBounds,
+} from '@/lib/facility-shutdown-window';
 
 const HKT = 'Asia/Hong_Kong';
 const COLLECTION = 'facilityShutdown';
+const LOG_COLLECTION = 'facilityShutdownLogs';
 const DOC_ID = 'current';
 const TICKET_TTL_MS = 3 * 60 * 1000;
 const LOCK_MS = 15 * 60 * 1000;
@@ -15,13 +21,22 @@ const TRIGGER_LOCK_MS = 60 * 1000;
 
 export type FacilityShutdownPublicStatus = 'ok' | 'closed' | 'invalid' | 'busy' | 'failed';
 
+export type FacilityShutdownLogView = {
+  id: string;
+  triggeredAtLabel: string;
+  windowLabel: string;
+  passcode: string;
+};
+
 export type FacilityShutdownSettingsView = {
   passcode: string | null;
   startTime: string | null;
   endTime: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  windowLabel: string | null;
   isActive: boolean;
-  triggeredAtIso: string | null;
-  triggeredAtLabel: string | null;
+  logs: FacilityShutdownLogView[];
 };
 
 type ShutdownDoc = {
@@ -29,7 +44,10 @@ type ShutdownDoc = {
   startTime: string | null;
   endTime: string | null;
   isActive: boolean;
-  triggeredAtMs: number | null;
+  startDate: string | null;
+  endDate: string | null;
+  effectiveFromMs: number | null;
+  effectiveUntilMs: number | null;
   ticketHash: string | null;
   ticketExpiresAtMs: number | null;
   failedAttempts: number;
@@ -67,7 +85,10 @@ function emptyDoc(): ShutdownDoc {
     startTime: null,
     endTime: null,
     isActive: false,
-    triggeredAtMs: null,
+    startDate: null,
+    endDate: null,
+    effectiveFromMs: null,
+    effectiveUntilMs: null,
     ticketHash: null,
     ticketExpiresAtMs: null,
     failedAttempts: 0,
@@ -81,12 +102,17 @@ function parseDoc(data: FirebaseFirestore.DocumentData | undefined): ShutdownDoc
   const passcode = typeof data.passcode === 'string' && /^\d{4}$/.test(data.passcode) ? data.passcode : null;
   const startTime = typeof data.startTime === 'string' && parseHm(data.startTime) !== null ? data.startTime : null;
   const endTime = typeof data.endTime === 'string' && parseHm(data.endTime) !== null ? data.endTime : null;
+  const startDate = typeof data.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(data.startDate) ? data.startDate : null;
+  const endDate = typeof data.endDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(data.endDate) ? data.endDate : null;
   return {
     passcode,
     startTime,
     endTime,
     isActive: data.isActive === true,
-    triggeredAtMs: millisOf(data.triggeredAt),
+    startDate,
+    endDate,
+    effectiveFromMs: millisOf(data.effectiveFrom),
+    effectiveUntilMs: millisOf(data.effectiveUntil),
     ticketHash: typeof data.ticketHash === 'string' ? data.ticketHash : null,
     ticketExpiresAtMs: millisOf(data.ticketExpiresAt),
     failedAttempts: typeof data.failedAttempts === 'number' ? data.failedAttempts : 0,
@@ -100,19 +126,39 @@ function docRef() {
   return db.collection(COLLECTION).doc(DOC_ID);
 }
 
-function toView(doc: ShutdownDoc): FacilityShutdownSettingsView {
-  const triggeredAtIso = doc.triggeredAtMs ? new Date(doc.triggeredAtMs).toISOString() : null;
-  const active = doc.isActive && !!doc.passcode && !!doc.startTime && !!doc.endTime;
+function windowIsConfigured(doc: ShutdownDoc): boolean {
+  return doc.isActive
+    && !!doc.passcode
+    && !!doc.startTime
+    && !!doc.endTime
+    && !!doc.startDate
+    && !!doc.endDate
+    && doc.effectiveFromMs !== null
+    && doc.effectiveUntilMs !== null;
+}
+
+function windowLabelOf(doc: ShutdownDoc): string | null {
+  if (!doc.startDate || !doc.endDate || !doc.startTime || !doc.endTime) return null;
+  return formatShutdownWindowLabel(doc.startDate, doc.startTime, doc.endDate, doc.endTime);
+}
+
+function toView(doc: ShutdownDoc, logs: FacilityShutdownLogView[]): FacilityShutdownSettingsView {
+  const active = windowIsConfigured(doc);
   return {
     passcode: active ? doc.passcode : null,
     startTime: active ? doc.startTime : null,
     endTime: active ? doc.endTime : null,
+    startDate: active ? doc.startDate : null,
+    endDate: active ? doc.endDate : null,
+    windowLabel: active ? windowLabelOf(doc) : null,
     isActive: active,
-    triggeredAtIso,
-    triggeredAtLabel: doc.triggeredAtMs
-      ? formatInTimeZone(new Date(doc.triggeredAtMs), HKT, 'yyyy-MM-dd HH:mm:ss')
-      : null,
+    logs,
   };
+}
+
+function isOpenNow(doc: ShutdownDoc, now = new Date()): boolean {
+  if (!windowIsConfigured(doc) || doc.effectiveFromMs === null || doc.effectiveUntilMs === null) return false;
+  return isWithinAbsoluteShutdownWindow(now, doc.effectiveFromMs, doc.effectiveUntilMs);
 }
 
 async function assertAdmin(adminUserId: string): Promise<string | null> {
@@ -128,15 +174,58 @@ export function randomFacilityPasscode(): string {
   return String(randomInt(0, 10000)).padStart(4, '0');
 }
 
+async function readLogs(): Promise<FacilityShutdownLogView[]> {
+  if (!db) return [];
+  const snap = await db.collection(LOG_COLLECTION).orderBy('triggeredAt', 'desc').limit(200).get();
+  return snap.docs.flatMap((item) => {
+    const data = item.data();
+    const triggeredAtMs = millisOf(data.triggeredAt);
+    const startDate = typeof data.startDate === 'string' ? data.startDate : '';
+    const endDate = typeof data.endDate === 'string' ? data.endDate : '';
+    const startTime = typeof data.startTime === 'string' ? data.startTime : '';
+    const endTime = typeof data.endTime === 'string' ? data.endTime : '';
+    const passcode = typeof data.passcode === 'string' ? data.passcode : '';
+    if (!triggeredAtMs) return [];
+    const windowLabel = startDate && startTime && endTime
+      ? formatShutdownWindowLabel(startDate, startTime, endDate || startDate, endTime)
+      : '—';
+    return [{
+      id: item.id,
+      triggeredAtLabel: formatInTimeZone(new Date(triggeredAtMs), HKT, 'yyyy-MM-dd HH:mm:ss'),
+      windowLabel,
+      passcode: passcode || '—',
+    }];
+  });
+}
+
 export async function getFacilityShutdownSettingsForAdmin(adminUserId: string): Promise<
   { success: true; settings: FacilityShutdownSettingsView } | { success: false; error: string }
 > {
   const authError = await assertAdmin(adminUserId);
   if (authError) return { success: false, error: authError };
   const ref = docRef();
-  if (!ref) return { success: false, error: '後端資料庫未連接。' };
+  if (!ref || !db) return { success: false, error: '後端資料庫未連接。' };
   const snap = await ref.get();
-  return { success: true, settings: toView(parseDoc(snap.data())) };
+  await backfillLegacyTrigger(snap.data());
+  const logs = await readLogs();
+  return { success: true, settings: toView(parseDoc(snap.data()), logs) };
+}
+
+async function backfillLegacyTrigger(data: FirebaseFirestore.DocumentData | undefined) {
+  if (!db || !data) return;
+  const legacyMs = millisOf(data.triggeredAt);
+  if (!legacyMs) return;
+  const legacyRef = db.collection(LOG_COLLECTION).doc(`legacy-${legacyMs}`);
+  const existing = await legacyRef.get();
+  if (existing.exists) return;
+  await legacyRef.set({
+    triggeredAt: admin.firestore.Timestamp.fromMillis(legacyMs),
+    startDate: '',
+    endDate: '',
+    startTime: '',
+    endTime: '',
+    passcode: '',
+  });
 }
 
 export async function saveFacilityShutdownSettings(params: {
@@ -154,6 +243,13 @@ export async function saveFacilityShutdownSettings(params: {
   if (start === null || end === null) return { success: false, error: '時段格式不正確。' };
   if (start === end) return { success: false, error: '開始與結束時間不能相同。' };
 
+  const startDate = formatInTimeZone(new Date(), HKT, 'yyyy-MM-dd');
+  const bounds = shutdownWindowBounds(startDate, params.startTime, params.endTime);
+  if (!bounds) return { success: false, error: '時段格式不正確。' };
+  if (bounds.until.getTime() + 60_000 <= Date.now()) {
+    return { success: false, error: '此時段已經結束，請選擇尚未結束的時間。' };
+  }
+
   const ref = docRef()!;
   try {
     const settings = await db.runTransaction(async (tx) => {
@@ -162,12 +258,31 @@ export async function saveFacilityShutdownSettings(params: {
       if (current.triggerLockUntilMs && current.triggerLockUntilMs > Date.now()) {
         throw new Error('正在關閉器材，請稍後再設定。');
       }
+      const next: ShutdownDoc = {
+        ...current,
+        passcode: params.passcode,
+        startTime: params.startTime,
+        endTime: params.endTime,
+        startDate,
+        endDate: bounds.endDate,
+        effectiveFromMs: bounds.from.getTime(),
+        effectiveUntilMs: bounds.until.getTime(),
+        isActive: true,
+        ticketHash: null,
+        ticketExpiresAtMs: null,
+        failedAttempts: 0,
+        lockedUntilMs: null,
+        triggerLockUntilMs: null,
+      };
       tx.set(ref, {
         passcode: params.passcode,
         startTime: params.startTime,
         endTime: params.endTime,
+        startDate,
+        endDate: bounds.endDate,
+        effectiveFrom: admin.firestore.Timestamp.fromDate(bounds.from),
+        effectiveUntil: admin.firestore.Timestamp.fromDate(bounds.until),
         isActive: true,
-        triggeredAt: current.triggeredAtMs ? admin.firestore.Timestamp.fromMillis(current.triggeredAtMs) : null,
         ticketHash: null,
         ticketExpiresAt: null,
         failedAttempts: 0,
@@ -175,20 +290,10 @@ export async function saveFacilityShutdownSettings(params: {
         triggerLockUntil: null,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
-      return toView({
-        ...current,
-        passcode: params.passcode,
-        startTime: params.startTime,
-        endTime: params.endTime,
-        isActive: true,
-        ticketHash: null,
-        ticketExpiresAtMs: null,
-        failedAttempts: 0,
-        lockedUntilMs: null,
-        triggerLockUntilMs: null,
-      });
+      return toView(next, []);
     });
-    return { success: true, settings };
+    const logs = await readLogs();
+    return { success: true, settings: { ...settings, logs } };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : '無法儲存設定。';
     return { success: false, error: message };
@@ -229,14 +334,51 @@ export async function rotateFacilityShutdownPasscode(adminUserId: string): Promi
   }
 }
 
+export async function cancelFacilityShutdownSettings(adminUserId: string): Promise<
+  { success: true } | { success: false; error: string }
+> {
+  const authError = await assertAdmin(adminUserId);
+  if (authError) return { success: false, error: authError };
+  if (!db) return { success: false, error: '後端資料庫未連接。' };
+  const ref = docRef()!;
+  try {
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const current = parseDoc(snap.data());
+      if (current.triggerLockUntilMs && current.triggerLockUntilMs > Date.now()) {
+        throw new Error('正在關閉器材，請稍後再取消。');
+      }
+      tx.set(ref, {
+        passcode: null,
+        startTime: null,
+        endTime: null,
+        startDate: null,
+        endDate: null,
+        effectiveFrom: null,
+        effectiveUntil: null,
+        isActive: false,
+        ticketHash: null,
+        ticketExpiresAt: null,
+        failedAttempts: 0,
+        lockedUntil: null,
+        triggerLockUntil: null,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    });
+    return { success: true };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : '無法取消時段。';
+    return { success: false, error: message };
+  }
+}
+
 /** 公開頁只知道現在能不能輸入密碼，不回傳時段或密碼。 */
 export async function isFacilityShutdownWindowOpen(): Promise<boolean> {
   const ref = docRef();
   if (!ref) return false;
   const snap = await ref.get();
   const current = parseDoc(snap.data());
-  if (!current.isActive || !current.passcode || !current.startTime || !current.endTime) return false;
-  return isWithinShutdownWindow(new Date(), current.startTime, current.endTime);
+  return isOpenNow(current);
 }
 
 export async function verifyFacilityShutdownPasscode(passcode: string): Promise<
@@ -250,9 +392,8 @@ export async function verifyFacilityShutdownPasscode(passcode: string): Promise<
     const snap = await tx.get(ref);
     const current = parseDoc(snap.data());
     const now = Date.now();
-    const configured = current.isActive && !!current.passcode && !!current.startTime && !!current.endTime;
     const locked = !!current.lockedUntilMs && current.lockedUntilMs > now;
-    const open = configured && isWithinShutdownWindow(new Date(), current.startTime!, current.endTime!);
+    const open = isOpenNow(current);
     if (!open) return { status: 'closed' as const };
     if (locked || !hashesEqual(passcode, current.passcode!)) {
       if (!locked) {
@@ -290,19 +431,24 @@ export async function triggerFacilityShutdown(ticket: string): Promise<FacilityS
     if (!current.isActive || !current.passcode || !current.ticketHash || !current.ticketExpiresAtMs) return 'invalid' as const;
     if (current.ticketExpiresAtMs <= now) return 'invalid' as const;
     if (!sameSecret(sha256(ticket), current.ticketHash)) return 'invalid' as const;
-    if (!current.startTime || !current.endTime || !isWithinShutdownWindow(new Date(), current.startTime, current.endTime)) {
-      return 'closed' as const;
-    }
+    if (!isOpenNow(current)) return 'closed' as const;
     tx.update(ref, {
       isActive: false,
       ticketHash: null,
       ticketExpiresAt: null,
       triggerLockUntil: admin.firestore.Timestamp.fromMillis(now + TRIGGER_LOCK_MS),
     });
-    return 'claimed' as const;
+    return {
+      status: 'claimed' as const,
+      passcode: current.passcode!,
+      startTime: current.startTime!,
+      endTime: current.endTime!,
+      startDate: current.startDate!,
+      endDate: current.endDate!,
+    };
   });
 
-  if (claim !== 'claimed') return claim;
+  if (typeof claim === 'string') return claim;
 
   const calendarResult = await createFacilityCloseAllEvent(new Date());
   if (!calendarResult.ok) {
@@ -314,17 +460,31 @@ export async function triggerFacilityShutdown(ticket: string): Promise<FacilityS
     return 'failed';
   }
 
-  await ref.update({
+  const batch = db.batch();
+  const logRef = db.collection(LOG_COLLECTION).doc();
+  batch.set(logRef, {
+    triggeredAt: admin.firestore.FieldValue.serverTimestamp(),
+    startDate: claim.startDate,
+    endDate: claim.endDate,
+    startTime: claim.startTime,
+    endTime: claim.endTime,
+    passcode: claim.passcode,
+  });
+  batch.update(ref, {
     isActive: false,
     passcode: null,
     startTime: null,
     endTime: null,
-    triggeredAt: admin.firestore.FieldValue.serverTimestamp(),
+    startDate: null,
+    endDate: null,
+    effectiveFrom: null,
+    effectiveUntil: null,
     triggerLockUntil: null,
     failedAttempts: 0,
     lockedUntil: null,
     ticketHash: null,
     ticketExpiresAt: null,
   });
+  await batch.commit();
   return 'ok';
 }

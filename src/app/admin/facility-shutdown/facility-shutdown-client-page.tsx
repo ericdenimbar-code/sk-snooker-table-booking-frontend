@@ -3,14 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { generateHalfHourSlots } from '@/lib/blocked-slots';
 import { parseHm, shutdownWindowCrossesMidnight } from '@/lib/facility-shutdown-window';
 import {
+  cancelFacilityShutdown,
   getFacilityShutdownSettings,
   refreshFacilityShutdownPasscode,
   saveFacilityShutdown,
+  type FacilityShutdownLogView,
   type FacilityShutdownSettingsView,
 } from './actions';
 
@@ -32,41 +36,58 @@ export function FacilityShutdownClientPage() {
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
   const [isActive, setIsActive] = useState(false);
-  const [triggeredAtLabel, setTriggeredAtLabel] = useState<string | null>(null);
-  const triggeredAtIso = useRef<string | null>(null);
+  const [windowLabel, setWindowLabel] = useState<string | null>(null);
+  const [logs, setLogs] = useState<FacilityShutdownLogView[]>([]);
+  const latestLogId = useRef<string | null>(null);
   const initialized = useRef(false);
+  const isActiveRef = useRef(false);
+
+  const resetToPicker = useCallback(() => {
+    isActiveRef.current = false;
+    setIsActive(false);
+    setWindowLabel(null);
+    setStartTime('');
+    setEndTime('');
+    setPasscode(randomPasscode());
+  }, []);
+
+  const showActive = useCallback((settings: FacilityShutdownSettingsView) => {
+    isActiveRef.current = true;
+    setIsActive(true);
+    setPasscode(settings.passcode ?? '');
+    setStartTime(settings.startTime ?? '');
+    setEndTime(settings.endTime ?? '');
+    setWindowLabel(settings.windowLabel);
+  }, []);
 
   const applySettings = useCallback((settings: FacilityShutdownSettingsView, announceTrigger: boolean) => {
-    setTriggeredAtLabel(settings.triggeredAtLabel);
+    setLogs(settings.logs);
+    const newestLogId = settings.logs[0]?.id ?? null;
+
     if (!initialized.current) {
       initialized.current = true;
-      triggeredAtIso.current = settings.triggeredAtIso;
-      if (settings.isActive && settings.passcode && settings.startTime && settings.endTime) {
-        setPasscode(settings.passcode);
-        setStartTime(settings.startTime);
-        setEndTime(settings.endTime);
-        setIsActive(true);
-      } else {
-        setPasscode(randomPasscode());
-        setStartTime('');
-        setEndTime('');
-        setIsActive(false);
+      latestLogId.current = newestLogId;
+      if (settings.isActive && settings.passcode && settings.windowLabel) showActive(settings);
+      else resetToPicker();
+      return;
+    }
+
+    if (newestLogId && newestLogId !== latestLogId.current) {
+      latestLogId.current = newestLogId;
+      resetToPicker();
+      if (announceTrigger) {
+        toast({ title: '離場關機已觸發', description: '時段已結束，可以重新設定。' });
       }
       return;
     }
 
-    const triggered = settings.triggeredAtIso && settings.triggeredAtIso !== triggeredAtIso.current;
-    if (triggered) {
-      triggeredAtIso.current = settings.triggeredAtIso;
-      setIsActive(false);
-      setStartTime('');
-      setEndTime('');
-      setPasscode(randomPasscode());
-      if (announceTrigger) {
-        toast({ title: '離場關機已觸發', description: '密碼已作廢，可以重新設定。' });
-      }
+    if (settings.isActive && settings.passcode && settings.windowLabel) {
+      showActive(settings);
+      return;
     }
-  }, [toast]);
+
+    if (isActiveRef.current) resetToPicker();
+  }, [resetToPicker, showActive, toast]);
 
   const load = useCallback(async (userId: string, announceTrigger: boolean) => {
     const result = await getFacilityShutdownSettings(userId);
@@ -148,11 +169,25 @@ export function FacilityShutdownClientPage() {
         toast({ variant: 'destructive', title: '無法儲存', description: result.error });
         return;
       }
-      setIsActive(true);
-      setPasscode(result.settings.passcode ?? passcode);
-      setStartTime(result.settings.startTime ?? startTime);
-      setEndTime(result.settings.endTime ?? endTime);
-      toast({ title: '已儲存離場關機設定' });
+      showActive(result.settings);
+      setLogs(result.settings.logs);
+      toast({ title: '時段已生效' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!adminUserId) return;
+    setSaving(true);
+    try {
+      const result = await cancelFacilityShutdown(adminUserId);
+      if (!result.success) {
+        toast({ variant: 'destructive', title: '無法取消', description: result.error });
+        return;
+      }
+      resetToPicker();
+      toast({ title: '已取消時段' });
     } finally {
       setSaving(false);
     }
@@ -167,73 +202,123 @@ export function FacilityShutdownClientPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-3 text-center">
-        <div className="flex items-center justify-center gap-3">
-          <p className="text-5xl font-bold tracking-[0.35em] tabular-nums">{passcode}</p>
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            onClick={() => void handleRefresh()}
-            disabled={saving}
-            aria-label="重新整理"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          {isActive ? '此密碼已生效。按下重新整理會立即換成另一組。' : '此密碼尚未儲存。可先重新整理，再按確定寫入。'}
-        </p>
-        {triggeredAtLabel && (
-          <p className="text-sm">最後觸發時間：{triggeredAtLabel}（香港時間）</p>
-        )}
-      </div>
-
-      <div>
-        <h3 className="text-lg font-medium mb-2">選擇生效時段</h3>
-        <p className="text-sm text-muted-foreground mb-4">
-          以香港時間計算。例如 22:00 至次日 04:00，凌晨 01:00 仍算在時段內。
-        </p>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-2">
-            <Label htmlFor="shutdown-start">開始時間</Label>
-            <select
-              id="shutdown-start"
-              className={selectClass}
-              value={startTime}
-              onChange={(event) => setStartTime(event.target.value)}
-            >
-              <option value="">請選擇</option>
-              {slots.map((slot) => (
-                <option key={slot} value={slot}>{slot}</option>
-              ))}
-            </select>
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle>4 位數字密碼</CardTitle>
+          <CardDescription>選擇生效時段後按確定，密碼會一併寫入。結束時間早於開始時間會視為跨日至次日。</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="space-y-3 text-center">
+            <div className="flex items-center justify-center gap-3">
+              <p className="text-5xl font-bold tracking-[0.35em] tabular-nums">{passcode}</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => void handleRefresh()}
+                disabled={saving}
+                aria-label="重新整理"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {isActive ? '此密碼已生效。按下重新整理會立即換成另一組。' : '此密碼尚未儲存。可先重新整理，再按確定寫入。'}
+            </p>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="shutdown-end">結束時間</Label>
-            <select
-              id="shutdown-end"
-              className={selectClass}
-              value={endTime}
-              onChange={(event) => setEndTime(event.target.value)}
-            >
-              <option value="">請選擇</option>
-              {slots.map((slot) => (
-                <option key={`end-${slot}`} value={slot}>{slot}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-        {crossesMidnight && (
-          <p className="mt-3 text-sm text-muted-foreground">結束時間早於開始時間，會視為跨日至次日。</p>
-        )}
-      </div>
 
-      <Button type="button" size="lg" className="w-full" disabled={saving} onClick={() => void handleSave()}>
-        {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-        確定
-      </Button>
-    </div>
+          {isActive && windowLabel ? (
+            <div className="space-y-4">
+              <h3 className="text-lg font-medium">時段現正生效</h3>
+              <div className="rounded-md border bg-muted/50 p-4 text-center">
+                <p className="text-xl font-bold tabular-nums">{windowLabel}</p>
+              </div>
+              <Button type="button" variant="outline" className="w-full" disabled={saving} onClick={() => void handleCancel()}>
+                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                取消
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-lg font-medium mb-2">選擇生效時段</h3>
+                <p className="text-sm text-muted-foreground mb-4">
+                  以香港時間計算。例如 22:00 至次日 04:00，凌晨 01:00 仍算在時段內。日期以按下確定的當天計算。
+                </p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="shutdown-start">開始時間</Label>
+                    <select
+                      id="shutdown-start"
+                      className={selectClass}
+                      value={startTime}
+                      onChange={(event) => setStartTime(event.target.value)}
+                    >
+                      <option value="">請選擇</option>
+                      {slots.map((slot) => (
+                        <option key={slot} value={slot}>{slot}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="shutdown-end">結束時間</Label>
+                    <select
+                      id="shutdown-end"
+                      className={selectClass}
+                      value={endTime}
+                      onChange={(event) => setEndTime(event.target.value)}
+                    >
+                      <option value="">請選擇</option>
+                      {slots.map((slot) => (
+                        <option key={`end-${slot}`} value={slot}>{slot}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                {crossesMidnight && (
+                  <p className="mt-3 text-sm text-muted-foreground">結束時間早於開始時間，會視為跨日至次日。</p>
+                )}
+              </div>
+              <Button type="button" size="lg" className="w-full" disabled={saving} onClick={() => void handleSave()}>
+                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                確定
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>觸發紀錄</CardTitle>
+          <CardDescription>每一次在公開頁成功按下關閉後的紀錄，新的在上。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {logs.length === 0 ? (
+            <p className="text-sm text-muted-foreground">尚未有完成關機的紀錄。</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>觸發時間（香港時間）</TableHead>
+                  <TableHead>生效時段</TableHead>
+                  <TableHead>密碼</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {logs.map((log) => (
+                  <TableRow key={log.id}>
+                    <TableCell className="tabular-nums">{log.triggeredAtLabel}</TableCell>
+                    <TableCell className="tabular-nums">{log.windowLabel}</TableCell>
+                    <TableCell className="tabular-nums">{log.passcode}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    </>
   );
 }
