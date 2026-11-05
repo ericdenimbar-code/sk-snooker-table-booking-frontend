@@ -50,7 +50,8 @@ export default async function AdminStatusPage() {
         { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A) },
         { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B) },
         { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp), optional: true },
-        { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_multi', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_multi, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_multi), optional: true },
+        { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_Holdtable1', present: !!(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_Holdtable1 || process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_multi), preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_Holdtable1 || process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_multi), optional: true },
+        { name: 'GOOGLE_CALENDAR_ID_DOOR_CONTROL_HoldTable2', present: !!process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_HoldTable2, preview: getVarPreview(process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_HoldTable2), optional: true },
     ];
 
     const allGoogleVarsPresent = googleEnvVars.filter((v) => !v.optional).every((v) => v.present);

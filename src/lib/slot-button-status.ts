@@ -1,13 +1,14 @@
 import { cn } from '@/lib/utils';
 
+export type SlotHoldAppearance = 'none' | '1' | '2' | 'both';
+
 export type SlotStatusInput = {
   isExpired: boolean;
   isFull: boolean;
   isBlocked: boolean;
   isSelected: boolean;
   isAdmin: boolean;
-  isPendingBlockAdd?: boolean;
-  isPendingBlockRemove?: boolean;
+  hold?: SlotHoldAppearance;
 };
 
 export type SlotStatusResult = {
@@ -21,9 +22,9 @@ const baseClass = 'h-auto py-1.5 w-full';
 const availableClass = cn(baseClass, 'bg-white text-gray-900 hover:bg-green-50');
 const fullClass = cn(baseClass, 'bg-gray-200 text-gray-400 pointer-events-none cursor-not-allowed');
 const expiredClass = cn(baseClass, 'bg-gray-100 text-gray-400 pointer-events-none cursor-not-allowed');
-const adminBlockedClass = cn(baseClass, 'bg-yellow-400 hover:bg-yellow-500 text-gray-900');
-const adminPendingAddClass = cn(baseClass, 'bg-yellow-300 text-gray-900 ring-1 ring-yellow-600');
-const adminPendingRemoveClass = cn(baseClass, 'bg-gray-200 text-gray-500 line-through');
+const adminHoldTable1Class = cn(baseClass, 'bg-yellow-400 hover:bg-yellow-500 text-gray-900');
+const adminHoldTable2Class = cn(baseClass, 'bg-sky-200 hover:bg-sky-300 text-gray-900');
+const adminHoldBothClass = cn(baseClass, 'bg-red-200 hover:bg-red-300 text-gray-900');
 
 export function isSlotGray(isFull: boolean, isBlocked: boolean, isExpired: boolean): boolean {
   return isFull || isBlocked || isExpired;
@@ -36,8 +37,7 @@ export function resolveSlotStatus(input: SlotStatusInput): SlotStatusResult {
     isBlocked,
     isSelected,
     isAdmin,
-    isPendingBlockAdd,
-    isPendingBlockRemove,
+    hold = 'none',
   } = input;
 
   const isGray = isSlotGray(isFull, isBlocked, isExpired);
@@ -52,21 +52,14 @@ export function resolveSlotStatus(input: SlotStatusInput): SlotStatusResult {
   }
 
   if (isAdmin) {
-    if (isPendingBlockRemove) {
-      return {
-        isGray: true,
-        isDisabled: false,
-        variant: 'outline',
-        className: adminPendingRemoveClass,
-      };
+    if (!isExpired && hold === 'both') {
+      return { isGray: false, isDisabled: false, variant: 'outline', className: adminHoldBothClass };
     }
-    if (isPendingBlockAdd || (isBlocked && !isPendingBlockRemove)) {
-      return {
-        isGray: false,
-        isDisabled: false,
-        variant: 'outline',
-        className: isPendingBlockAdd ? adminPendingAddClass : adminBlockedClass,
-      };
+    if (!isExpired && hold === '1') {
+      return { isGray: false, isDisabled: false, variant: 'outline', className: adminHoldTable1Class };
+    }
+    if (!isExpired && hold === '2') {
+      return { isGray: false, isDisabled: false, variant: 'outline', className: adminHoldTable2Class };
     }
     if (isFull) {
       return { isGray: true, isDisabled: true, variant: 'secondary', className: fullClass };

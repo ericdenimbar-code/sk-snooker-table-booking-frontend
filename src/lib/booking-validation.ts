@@ -5,6 +5,8 @@ import {
   BLOCKED_SLOTS_COLLECTION,
   expandBookingToHalfHourKeys,
   generateHalfHourSlots,
+  parseHoldsFromDoc,
+  type HoldTable,
 } from '@/lib/blocked-slots';
 
 export const BOOKING_CONFLICT_MSG =
@@ -41,14 +43,16 @@ function timesOverlap(startA: string, endA: string, startB: string, endB: string
   return startA < endB && endA > startB;
 }
 
-async function getBlockedSlotsSetForDate(
+async function getHeldSlotsForRoom(
   db: FirestoreDb,
   date: string,
+  roomId: string,
 ): Promise<Set<string>> {
   const docSnap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
   if (!docSnap.exists) return new Set();
-  const slots = docSnap.data()?.slots;
-  return new Set(Array.isArray(slots) ? slots : []);
+  if (roomId !== '1' && roomId !== '2') return new Set();
+  const holds = parseHoldsFromDoc(docSnap.data() as Record<string, unknown> | undefined);
+  return new Set(holds[roomId as HoldTable]);
 }
 
 /**
@@ -69,7 +73,7 @@ export async function assertBookingAllowed(
   const blockedByDate = new Map<string, Set<string>>();
   await Promise.all(
     datesToCheck.map(async (d) => {
-      blockedByDate.set(d, await getBlockedSlotsSetForDate(db, d));
+      blockedByDate.set(d, await getHeldSlotsForRoom(db, d, roomId));
     }),
   );
 

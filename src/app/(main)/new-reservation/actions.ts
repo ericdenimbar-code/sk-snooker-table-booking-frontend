@@ -4,7 +4,7 @@
 import { db } from '@/lib/firebase-admin';
 import type { Reservation, TemporaryAccess } from '@/types';
 import { revalidatePath } from 'next/cache';
-import { applyDoorMultiControlCalendar, createGoogleCalendarEvent } from '@/lib/google-calendar';
+import { applyDoorMultiControlCalendar, createGoogleCalendarEvent, holdCalendarId } from '@/lib/google-calendar';
 import { getAdminSlotPeriodHkt } from '@/lib/hkt-temp-segment';
 import {
   DOOR_MULTI_CONTROLS,
@@ -22,9 +22,13 @@ import { unstable_cache as cache } from 'next/cache';
 import admin from 'firebase-admin';
 import {
   BLOCKED_SLOTS_COLLECTION,
+  emptyHolds,
   expandBookingToHalfHourKeys,
   generateHalfHourSlots,
   isValidHalfHourSlot,
+  parseHoldsFromDoc,
+  type HoldTable,
+  type HoldsByTable,
 } from '@/lib/blocked-slots';
 import { assertBookingAllowed, BOOKING_CONFLICT_MSG } from '@/lib/booking-validation';
 
@@ -44,19 +48,19 @@ async function assertAdminUser(adminUserId: string): Promise<string | null> {
     return null;
 }
 
-async function getBlockedSlotsSetForDate(date: string): Promise<Set<string>> {
-    if (!db) return new Set();
+async function getHoldsForDate(date: string): Promise<HoldsByTable> {
+    if (!db) return emptyHolds();
     const docSnap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
-    if (!docSnap.exists) return new Set();
-    const slots = docSnap.data()?.slots;
-    return new Set(Array.isArray(slots) ? slots : []);
+    if (!docSnap.exists) return emptyHolds();
+    return parseHoldsFromDoc(docSnap.data() as Record<string, unknown> | undefined);
 }
 
-export async function getBlockedSlotsForDate(date: string): Promise<ServerActionResponse & { slots?: string[] }> {
+export async function getBlockedSlotsForDate(date: string): Promise<ServerActionResponse & { holds?: HoldsByTable; slots?: string[] }> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
     try {
-        const slots = [...(await getBlockedSlotsSetForDate(date))];
-        return { success: true, slots };
+        const holds = await getHoldsForDate(date);
+        const slots = [...new Set([...holds['1'], ...holds['2']])];
+        return { success: true, holds, slots };
     } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         return { success: false, error: `讀取預留時段失敗: ${msg}` };
@@ -67,7 +71,9 @@ async function assertBookingNotBlocked(
     date: string,
     startTime: string,
     endTime: string,
+    roomId: string,
 ): Promise<string | null> {
+    if (roomId !== '1' && roomId !== '2') return null;
     const keys = expandBookingToHalfHourKeys(date, startTime, endTime);
     if (keys.length === 0) return null;
 
@@ -75,7 +81,8 @@ async function assertBookingNotBlocked(
     const blockedByDate = new Map<string, Set<string>>();
     await Promise.all(
         datesToCheck.map(async (d) => {
-            blockedByDate.set(d, await getBlockedSlotsSetForDate(d));
+            const holds = await getHoldsForDate(d);
+            blockedByDate.set(d, new Set(holds[roomId]));
         }),
     );
 
@@ -87,9 +94,11 @@ async function assertBookingNotBlocked(
     return null;
 }
 
+type HoldSlotChange = { time: string; table: HoldTable };
+
 export async function applyBlockedSlotChanges(
     adminUserId: string,
-    changes: { date: string; toAdd: string[]; toRemove: string[] }[],
+    changes: { date: string; toAdd: HoldSlotChange[]; toRemove: HoldSlotChange[] }[],
 ): Promise<ServerActionResponse> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
 
@@ -97,46 +106,83 @@ export async function applyBlockedSlotChanges(
     if (authError) return { success: false, error: authError };
 
     const timeSlots = generateHalfHourSlots();
-    const mergedByDate = new Map<string, { toAdd: Set<string>; toRemove: Set<string> }>();
+    const mergedByDate = new Map<string, { toAdd: HoldSlotChange[]; toRemove: HoldSlotChange[] }>();
 
     for (const { date, toAdd, toRemove } of changes) {
-        if (!mergedByDate.has(date)) {
-            mergedByDate.set(date, { toAdd: new Set(), toRemove: new Set() });
-        }
-        const entry = mergedByDate.get(date)!;
-        toAdd.filter((s) => isValidHalfHourSlot(s, timeSlots)).forEach((s) => entry.toAdd.add(s));
-        toRemove.filter((s) => isValidHalfHourSlot(s, timeSlots)).forEach((s) => entry.toRemove.add(s));
+        const entry = mergedByDate.get(date) ?? { toAdd: [], toRemove: [] };
+        const addKeys = new Set(toAdd.map((item) => `${item.table}|${item.time}`));
+        const removeKeys = new Set(toRemove.map((item) => `${item.table}|${item.time}`));
+        toAdd
+            .filter((item) => isValidHalfHourSlot(item.time, timeSlots) && !removeKeys.has(`${item.table}|${item.time}`))
+            .forEach((item) => entry.toAdd.push(item));
+        toRemove
+            .filter((item) => isValidHalfHourSlot(item.time, timeSlots) && !addKeys.has(`${item.table}|${item.time}`))
+            .forEach((item) => entry.toRemove.push(item));
+        mergedByDate.set(date, entry);
     }
 
     const batch = db.batch();
     let hasWrites = false;
     const calendarPlans: {
         date: string;
+        table: HoldTable;
         existingEvents: DoorMultiEventRecord[];
         toAdd: string[];
         toRemove: string[];
+        storedEvents: { '1': DoorMultiEventRecord[]; '2': DoorMultiEventRecord[] };
     }[] = [];
 
     for (const [date, { toAdd, toRemove }] of mergedByDate) {
-        if (toAdd.size === 0 && toRemove.size === 0) continue;
+        if (toAdd.length === 0 && toRemove.length === 0) continue;
 
         const ref = db.collection(BLOCKED_SLOTS_COLLECTION).doc(date);
         const docSnap = await ref.get();
-        const current = new Set<string>(
-            Array.isArray(docSnap.data()?.slots) ? docSnap.data()!.slots as string[] : [],
-        );
+        const data = docSnap.data() as Record<string, unknown> | undefined;
+        const current = parseHoldsFromDoc(data);
+        const next: HoldsByTable = {
+            '1': [...new Set(current['1'])],
+            '2': [...new Set(current['2'])],
+        };
+        for (const item of toAdd) {
+            if (!next[item.table].includes(item.time)) next[item.table].push(item.time);
+        }
+        for (const item of toRemove) {
+            next[item.table] = next[item.table].filter((time) => time !== item.time);
+        }
+        next['1'].sort();
+        next['2'].sort();
 
-        toAdd.forEach((s) => current.add(s));
-        toRemove.forEach((s) => current.delete(s));
-
-        batch.set(ref, { slots: [...current] }, { merge: true });
+        const slots = [...new Set([...next['1'], ...next['2']])].sort();
+        batch.set(ref, { holds: next, slots }, { merge: true });
         hasWrites = true;
-        calendarPlans.push({
-            date,
-            existingEvents: parseDoorMultiEvents(docSnap.data()?.doorMultiEvents),
-            toAdd: [...toAdd],
-            toRemove: [...toRemove],
-        });
+
+        const storedEvents = data?.doorHoldEvents;
+        const storedForDate = {
+            '1': parseDoorMultiEvents(
+                storedEvents && typeof storedEvents === 'object' ? (storedEvents as Record<string, unknown>)['1'] : undefined,
+            ),
+            '2': parseDoorMultiEvents(
+                storedEvents && typeof storedEvents === 'object' ? (storedEvents as Record<string, unknown>)['2'] : undefined,
+            ),
+        };
+        const legacyEvents = parseDoorMultiEvents(data?.doorMultiEvents)
+            .filter((event) => event.actionKey === 'reserved-slot')
+            .map((event) => ({ ...event, actionKey: 'reserved-slot-1' }));
+        for (const table of ['1', '2'] as const) {
+            const tableAdds = toAdd.filter((item) => item.table === table).map((item) => item.time);
+            const tableRemoves = toRemove.filter((item) => item.table === table).map((item) => item.time);
+            if (tableAdds.length === 0 && tableRemoves.length === 0 && !(table === '1' && legacyEvents.length > 0 && (toAdd.length > 0 || toRemove.length > 0))) {
+                continue;
+            }
+            calendarPlans.push({
+                date,
+                table,
+                existingEvents: table === '1' ? [...storedForDate['1'], ...legacyEvents] : storedForDate['2'],
+                toAdd: tableAdds,
+                toRemove: tableRemoves,
+                storedEvents: storedForDate,
+            });
+        }
     }
 
     if (!hasWrites) {
@@ -151,38 +197,51 @@ export async function applyBlockedSlotChanges(
         return { success: false, error: `更新預留時段失敗: ${msg}` };
     }
 
-    const calendarWarning = await syncReservedSlotsToDoorMultiCalendar(calendarPlans);
+    const calendarWarning = await syncReservedSlotsToHoldCalendars(calendarPlans);
     return calendarWarning ? { success: true, calendarWarning } : { success: true };
 }
 
-async function syncReservedSlotsToDoorMultiCalendar(
-    plans: { date: string; existingEvents: DoorMultiEventRecord[]; toAdd: string[]; toRemove: string[] }[],
+async function syncReservedSlotsToHoldCalendars(
+    plans: { date: string; table: HoldTable; existingEvents: DoorMultiEventRecord[]; toAdd: string[]; toRemove: string[]; storedEvents: { '1': DoorMultiEventRecord[]; '2': DoorMultiEventRecord[] } }[],
 ): Promise<string | null> {
     if (!db) return null;
-    const action = DOOR_MULTI_CONTROLS.reservedSlot;
+    const title = DOOR_MULTI_CONTROLS.reservedSlot.title;
     const warnings: string[] = [];
+    const eventsByDate = new Map<string, { '1': DoorMultiEventRecord[]; '2': DoorMultiEventRecord[] }>();
 
     for (const plan of plans) {
+        const actionKey = `reserved-slot-${plan.table}`;
         const { desired, toCreate, toDelete } = reconcileDoorMultiCoverage(
             plan.existingEvents,
-            action.key,
+            actionKey,
             plan.date,
             plan.toAdd,
             plan.toRemove,
         );
-        if (toCreate.length === 0 && toDelete.length === 0) continue;
+        const bucket = eventsByDate.get(plan.date) ?? {
+            '1': [...plan.storedEvents['1']],
+            '2': [...plan.storedEvents['2']],
+        };
+        if (toCreate.length === 0 && toDelete.length === 0) {
+            bucket[plan.table] = plan.existingEvents.filter((event) => event.actionKey === actionKey);
+            eventsByDate.set(plan.date, bucket);
+            continue;
+        }
 
         const calendarResult = await applyDoorMultiControlCalendar({
-            title: action.title,
+            calendarId: holdCalendarId(plan.table),
+            missingCalendarMessage: plan.table === '1'
+                ? '缺少 GOOGLE_CALENDAR_ID_DOOR_CONTROL_Holdtable1。'
+                : '缺少 GOOGLE_CALENDAR_ID_DOOR_CONTROL_HoldTable2。',
+            title,
             toDeleteEventKeys: toDelete.map((event) => event.eventKey),
             toCreate: toCreate.map((event) => {
                 const period = getAdminSlotPeriodHkt(plan.date, event.start, event.end);
-                const leadMs = action.calendarStartLeadMinutes * 60 * 1000;
                 return {
                     eventKey: event.eventKey,
-                    startIso: new Date(period.validFrom.getTime() - leadMs).toISOString(),
+                    startIso: period.validFrom.toISOString(),
                     endIso: period.validUntil.toISOString(),
-                    description: `預留時段 ${plan.date} ${event.start}-${event.end}`,
+                    description: `預留時段 枱號${plan.table} ${plan.date} ${event.start}-${event.end}`,
                 };
             }),
         });
@@ -193,13 +252,19 @@ async function syncReservedSlotsToDoorMultiCalendar(
 
         const deleted = new Set(calendarResult.deletedKeys);
         const created = new Set(calendarResult.createdKeys);
-        const kept = plan.existingEvents.filter((event) => event.actionKey === action.key && !deleted.has(event.eventKey));
-        const others = plan.existingEvents.filter((event) => event.actionKey !== action.key);
+        const kept = plan.existingEvents.filter((event) => event.actionKey === actionKey && !deleted.has(event.eventKey));
         const createdRecords = desired.filter((event) => created.has(event.eventKey));
+        bucket[plan.table] = [...kept, ...createdRecords];
+        eventsByDate.set(plan.date, bucket);
+    }
 
+    for (const [date, events] of eventsByDate) {
         try {
-            await db.collection(BLOCKED_SLOTS_COLLECTION).doc(plan.date).set(
-                { doorMultiEvents: [...others, ...kept, ...createdRecords] },
+            const current = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+            const remainingLegacy = parseDoorMultiEvents(current.data()?.doorMultiEvents)
+                .filter((event) => event.actionKey !== 'reserved-slot');
+            await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).set(
+                { doorHoldEvents: events, doorMultiEvents: remainingLegacy },
                 { merge: true },
             );
         } catch (e: unknown) {
@@ -208,7 +273,7 @@ async function syncReservedSlotsToDoorMultiCalendar(
         }
     }
 
-    return warnings.length > 0 ? `預留時段已更新，但門禁日曆同步未完成：${warnings[0]}` : null;
+    return warnings.length > 0 ? `預留時段已更新，但日曆同步未完成：${warnings[0]}` : null;
 }
 
 export async function blockSlots(
@@ -345,7 +410,7 @@ export async function createReservation(
         return { success: false, error: '無效的房間 ID。' };
     }
 
-    const blockedError = await assertBookingNotBlocked(data.date, data.startTime, data.endTime);
+    const blockedError = await assertBookingNotBlocked(data.date, data.startTime, data.endTime, data.roomId);
     if (blockedError) {
         return { success: false, error: blockedError };
     }
@@ -464,6 +529,7 @@ export async function createMultipleReservations(
                     resData.date,
                     resData.startTime,
                     resData.endTime,
+                    resData.roomId,
                 );
                 if (blockedError) {
                     throw new Error(blockedError);
@@ -576,7 +642,7 @@ export async function createPendingFpsReservation(
 ): Promise<ServerActionResponse> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
 
-    const blockedError = await assertBookingNotBlocked(data.date, data.startTime, data.endTime);
+    const blockedError = await assertBookingNotBlocked(data.date, data.startTime, data.endTime, data.roomId);
     if (blockedError) {
         return { success: false, error: blockedError };
     }

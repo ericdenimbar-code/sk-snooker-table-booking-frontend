@@ -14,6 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ConfirmationDialog, type ConfirmationDetails } from '@/components/custom/confirmation-dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, ShoppingCart, ArrowRight, ChevronDown } from 'lucide-react';
@@ -29,8 +30,12 @@ import { useReservationsForDate } from '@/hooks/use-reservations-snapshot';
 import { resolveSlotStatus } from '@/lib/slot-button-status';
 import {
   dateToHktYmd,
+  emptyHolds,
+  expandBookingToHalfHourKeys,
   generateHalfHourSlots,
   isHalfHourSlotPastHkt,
+  type HoldsByTable,
+  type HoldTable,
 } from '@/lib/blocked-slots';
 
 
@@ -53,7 +58,7 @@ type ReservationClientPageProps = {
     room1Name: string;
     room2Name: string;
     initialReservations: Reservation[];
-    initialBlockedSlots?: string[];
+    initialHolds?: HoldsByTable;
     initialBlockedSlotsDate?: string;
 }
 
@@ -62,7 +67,7 @@ export function ReservationClientPage({
   room1Name,
   room2Name,
   initialReservations,
-  initialBlockedSlots = [],
+  initialHolds = emptyHolds(),
   initialBlockedSlotsDate,
 }: ReservationClientPageProps) {
   const { toast } = useToast();
@@ -77,17 +82,17 @@ export function ReservationClientPage({
   const [selectedSlots, setSelectedSlots] = useState<SelectedSlot[]>([]);
   const [isApplyingBlockChanges, setIsApplyingBlockChanges] = useState(false);
 
-  const ssrBlockedSlots =
+  const ssrHolds =
     selectedDate &&
     initialBlockedSlotsDate &&
     dateToHktYmd(selectedDate) === initialBlockedSlotsDate
-      ? initialBlockedSlots
-      : [];
+      ? initialHolds
+      : emptyHolds();
 
   const {
-    dbBlockedSlots: blockedSlots,
+    holdSets,
     refetchBlockedSlots,
-  } = useBlockedSlotsSnapshot(selectedDate, ssrBlockedSlots);
+  } = useBlockedSlotsSnapshot(selectedDate, ssrHolds);
 
   const slotCostMap = useMemo(() => new Map(slotCostsData.map(s => [s.startTime, s.cost])), [slotCostsData]);
 
@@ -102,8 +107,9 @@ export function ReservationClientPage({
 
   const [isSoloBooking, setIsSoloBooking] = useState(false);
   const [isDetailsCollapsed, setIsDetailsCollapsed] = useState(false);
-  const [pendingBlockAdds, setPendingBlockAdds] = useState<Map<string, Set<string>>>(new Map());
-  const [pendingBlockRemoves, setPendingBlockRemoves] = useState<Map<string, Set<string>>>(new Map());
+  const [pendingHoldAdds, setPendingHoldAdds] = useState<Map<string, Map<string, Set<HoldTable>>>>(new Map());
+  const [pendingHoldRemoves, setPendingHoldRemoves] = useState<Map<string, Map<string, Set<HoldTable>>>>(new Map());
+  const [holdDialog, setHoldDialog] = useState<'create' | string | null>(null);
 
   const maxBookableDate = useMemo(() => {
     const today = startOfToday();
@@ -169,40 +175,56 @@ export function ReservationClientPage({
     return newAvailability;
   }, [selectedDate, allReservations, timeSlots]);
 
-  const pendingBlockChangeCount = useMemo(() => {
+  const pendingHoldChangeCount = useMemo(() => {
     let count = 0;
-    pendingBlockAdds.forEach((set) => { count += set.size; });
-    pendingBlockRemoves.forEach((set) => { count += set.size; });
+    const tally = (source: Map<string, Map<string, Set<HoldTable>>>) => {
+      source.forEach((slots) => slots.forEach((tables) => { count += tables.size; }));
+    };
+    tally(pendingHoldAdds);
+    tally(pendingHoldRemoves);
     return count;
-  }, [pendingBlockAdds, pendingBlockRemoves]);
+  }, [pendingHoldAdds, pendingHoldRemoves]);
 
-  const hasPendingBlockChanges = pendingBlockChangeCount > 0;
+  const hasPendingBlockChanges = pendingHoldChangeCount > 0;
 
-  const updatePendingMap = useCallback((
-    setter: React.Dispatch<React.SetStateAction<Map<string, Set<string>>>>,
+  const stageHoldChange = useCallback((
+    setter: React.Dispatch<React.SetStateAction<Map<string, Map<string, Set<HoldTable>>>>>,
     date: string,
     time: string,
+    table: HoldTable,
     shouldAdd: boolean,
   ) => {
     setter((prev) => {
       const next = new Map(prev);
-      const slotSet = new Set(next.get(date) ?? []);
-      if (shouldAdd) slotSet.add(time);
-      else slotSet.delete(time);
-      if (slotSet.size === 0) next.delete(date);
-      else next.set(date, slotSet);
+      const slots = new Map(next.get(date) ?? []);
+      const tables = new Set(slots.get(time) ?? []);
+      if (shouldAdd) tables.add(table);
+      else tables.delete(table);
+      if (tables.size === 0) slots.delete(time);
+      else slots.set(time, tables);
+      if (slots.size === 0) next.delete(date);
+      else next.set(date, slots);
       return next;
     });
   }, []);
 
+  const effectiveHoldTables = useCallback((dateStr: string, time: string): Set<HoldTable> => {
+    const tables = new Set<HoldTable>();
+    if (holdSets['1'].has(time)) tables.add('1');
+    if (holdSets['2'].has(time)) tables.add('2');
+    pendingHoldAdds.get(dateStr)?.get(time)?.forEach((table) => tables.add(table));
+    pendingHoldRemoves.get(dateStr)?.get(time)?.forEach((table) => tables.delete(table));
+    return tables;
+  }, [holdSets, pendingHoldAdds, pendingHoldRemoves]);
+
   useEffect(() => {
-    setPendingBlockAdds(new Map());
-    setPendingBlockRemoves(new Map());
+    setPendingHoldAdds(new Map());
+    setPendingHoldRemoves(new Map());
   }, [selectedDate]);
 
   useEffect(() => {
     void refetchReservations();
-  }, [blockedSlots, refetchReservations]);
+  }, [holdSets, refetchReservations]);
 
   useEffect(() => {
     setIsMounted(true);
@@ -235,36 +257,36 @@ export function ReservationClientPage({
     router.refresh();
   }, [refetchBlockedSlots, refetchReservations, router]);
 
-  const togglePendingBlockChange = useCallback((dateStr: string, time: string) => {
-    const inDb = blockedSlots.has(time);
-    const pendingAdd = pendingBlockAdds.get(dateStr)?.has(time) ?? false;
-    const pendingRemove = pendingBlockRemoves.get(dateStr)?.has(time) ?? false;
-
-    if (pendingAdd) {
-      updatePendingMap(setPendingBlockAdds, dateStr, time, false);
-    } else if (pendingRemove) {
-      updatePendingMap(setPendingBlockRemoves, dateStr, time, false);
-    } else if (inDb) {
-      updatePendingMap(setPendingBlockRemoves, dateStr, time, true);
+  const slotIsUnavailable = useCallback((dateStr: string, time: string) => {
+    const rooms = new Set<string>(effectiveHoldTables(dateStr, time));
+    for (const reservation of allReservations) {
+      if (reservation.status === 'Cancelled') continue;
+      const covers = expandBookingToHalfHourKeys(reservation.date, reservation.startTime, reservation.endTime)
+        .some((slot) => slot.date === dateStr && slot.time === time);
+      if (covers) rooms.add(reservation.roomId);
     }
-  }, [blockedSlots, pendingBlockAdds, pendingBlockRemoves, updatePendingMap]);
+    return rooms.size >= 2;
+  }, [allReservations, effectiveHoldTables]);
 
   const handleSlotClick = (time: string) => {
     if (!selectedDate || !isMounted) return;
 
     const dateStr = dateToHktYmd(selectedDate);
-    const inDb = blockedSlots.has(time);
-    const pendingAdd = pendingBlockAdds.get(dateStr)?.has(time) ?? false;
-    const pendingRemove = pendingBlockRemoves.get(dateStr)?.has(time) ?? false;
-    const isEffectivelyBlocked = (inDb && !pendingRemove) || pendingAdd;
+    const heldTables = effectiveHoldTables(dateStr, time);
 
-    if (isAdmin && (isEffectivelyBlocked || pendingRemove)) {
-      togglePendingBlockChange(dateStr, time);
+    const slotAvailability = availability.get(time) || 0;
+    const expired = isHalfHourSlotPastHkt(dateStr, time);
+    const unavailable = expired || slotAvailability >= 2 || slotIsUnavailable(dateStr, time);
+
+    // 已預留但仍有一張枱可訂時，選時段仍先做付費預約。
+    // 只有在尚未挑選結束時段時，才打開預留選單，並把預約付費放在第一個。
+    if (isAdmin && !expired && heldTables.size > 0 && selectedSlots.length !== 1) {
+      setHoldDialog(time);
       return;
     }
 
-    const slotAvailability = availability.get(time) || 0;
-    if (isHalfHourSlotPastHkt(dateStr, time) || slotAvailability >= 2 || isEffectivelyBlocked) {
+    if (unavailable) {
+      if (isAdmin && !expired && heldTables.size > 0) setHoldDialog(time);
       return;
     }
 
@@ -317,13 +339,10 @@ export function ReservationClientPage({
                 const currentDateStr = dateToHktYmd(day);
 
                 const currentSlotAvailability = availability.get(currentSlotTime) || 0;
-                const currentIsBlocked =
-                  (isSameDay(day, selectedDate) && blockedSlots.has(currentSlotTime) && !pendingBlockRemoves.get(dateToHktYmd(selectedDate))?.has(currentSlotTime))
-                  || (isSameDay(day, selectedDate) && (pendingBlockAdds.get(dateToHktYmd(selectedDate))?.has(currentSlotTime) ?? false));
                 if (
                   currentSlotAvailability >= 2 ||
                   isHalfHourSlotPastHkt(currentDateStr, currentSlotTime) ||
-                  currentIsBlocked
+                  slotIsUnavailable(currentDateStr, currentSlotTime)
                 ) {
                     hasConflict = true;
                     break;
@@ -331,6 +350,10 @@ export function ReservationClientPage({
                 newSelection.push({ date: day, time: currentSlotTime });
             }
             if (hasConflict) break;
+        }
+
+        if (!hasConflict && !determineRoomForBooking(newSelection)) {
+            hasConflict = true;
         }
 
         if (hasConflict) {
@@ -352,46 +375,61 @@ export function ReservationClientPage({
     });
   }, [selectedSlots]);
   
-  const stageSlotsForBlock = () => {
+  const stageHoldAdd = (dateStr: string, time: string, table: HoldTable) => {
+    if (isHalfHourSlotPastHkt(dateStr, time)) return false;
+    if (effectiveHoldTables(dateStr, time).has(table)) return false;
+    const pendingRemove = pendingHoldRemoves.get(dateStr)?.get(time)?.has(table) ?? false;
+    if (pendingRemove) {
+      stageHoldChange(setPendingHoldRemoves, dateStr, time, table, false);
+    } else {
+      stageHoldChange(setPendingHoldAdds, dateStr, time, table, true);
+    }
+    return true;
+  };
+
+  const stageSlotsForBlock = (table: HoldTable) => {
     if (sortedSlots.length === 0) return;
 
     let staged = 0;
     for (const slot of sortedSlots) {
-      const dateStr = dateToHktYmd(slot.date);
-      if (isHalfHourSlotPastHkt(dateStr, slot.time)) continue;
-      if ((availability.get(slot.time) || 0) >= 2) continue;
-
-      const inDb = blockedSlots.has(slot.time);
-      const alreadyPending = pendingBlockAdds.get(dateStr)?.has(slot.time);
-      const pendingRemove = pendingBlockRemoves.get(dateStr)?.has(slot.time);
-      if ((inDb && !pendingRemove) || alreadyPending) continue;
-
-      updatePendingMap(setPendingBlockAdds, dateStr, slot.time, true);
-      staged++;
+      if (stageHoldAdd(dateToHktYmd(slot.date), slot.time, table)) staged++;
     }
 
     if (staged === 0) {
-      toast({ variant: 'destructive', title: '無法預留', description: '所選時段不可用或已在待更新清單中。' });
+      toast({ variant: 'destructive', title: '無法預留', description: '所選時段不可用或該枱已預留。' });
       return;
     }
 
     setSelectedSlots([]);
-    toast({ title: '已加入待預留清單', description: '請按「確定更新狀態」以同步至系統。' });
+    setHoldDialog(null);
+  };
+
+  const stageHoldRemoval = (time: string, table: HoldTable) => {
+    if (!selectedDate) return;
+    const dateStr = dateToHktYmd(selectedDate);
+    if (!effectiveHoldTables(dateStr, time).has(table)) return;
+    const pendingAdd = pendingHoldAdds.get(dateStr)?.get(time)?.has(table) ?? false;
+    const inDb = holdSets[table].has(time);
+    if (pendingAdd) stageHoldChange(setPendingHoldAdds, dateStr, time, table, false);
+    if (inDb) stageHoldChange(setPendingHoldRemoves, dateStr, time, table, true);
+    setHoldDialog(null);
   };
 
   const handleConfirmBlockChanges = async () => {
     if (!user?.id || !hasPendingBlockChanges) return;
 
     const dates = new Set<string>([
-      ...pendingBlockAdds.keys(),
-      ...pendingBlockRemoves.keys(),
+      ...pendingHoldAdds.keys(),
+      ...pendingHoldRemoves.keys(),
     ]);
 
-    const changes = Array.from(dates).map((date) => ({
-      date,
-      toAdd: [...(pendingBlockAdds.get(date) ?? [])],
-      toRemove: [...(pendingBlockRemoves.get(date) ?? [])],
-    }));
+    const changes = Array.from(dates).map((date) => {
+      const toAdd: { time: string; table: HoldTable }[] = [];
+      const toRemove: { time: string; table: HoldTable }[] = [];
+      pendingHoldAdds.get(date)?.forEach((tables, time) => tables.forEach((table) => toAdd.push({ time, table })));
+      pendingHoldRemoves.get(date)?.forEach((tables, time) => tables.forEach((table) => toRemove.push({ time, table })));
+      return { date, toAdd, toRemove };
+    });
 
     setIsApplyingBlockChanges(true);
     const result = await applyBlockedSlotChanges(user.id, changes);
@@ -403,8 +441,8 @@ export function ReservationClientPage({
         description: result.error || '無法更新預留狀態，請稍後再試。',
       });
     } else {
-      setPendingBlockAdds(new Map());
-      setPendingBlockRemoves(new Map());
+      setPendingHoldAdds(new Map());
+      setPendingHoldRemoves(new Map());
       toast({ title: '預留狀態已更新', description: '變更已同步，用戶端將即時收到更新。' });
       if (result.calendarWarning) {
         toast({ variant: 'destructive', title: '門禁日曆未同步', description: result.calendarWarning });
@@ -443,6 +481,10 @@ export function ReservationClientPage({
     const isAdmin = user?.role?.toLowerCase() === 'admin';
     if (!isAdmin && sortedSlots.length < 2) {
       setIsDurationErrorDialogOpen(true);
+      return;
+    }
+    if (!determineRoomForBooking(sortedSlots)) {
+      toast({ variant: 'destructive', title: '無法預約', description: '此時段沒有可預訂的球枱。' });
       return;
     }
 
@@ -525,6 +567,9 @@ export function ReservationClientPage({
 
       const isSlotBookedInRoom = (date: Date, time: string, roomId: string) => {
         const dateStr = format(date, 'yyyy-MM-dd');
+        if ((roomId === '1' || roomId === '2') && effectiveHoldTables(dateToHktYmd(date), time).has(roomId)) {
+          return true;
+        }
         // Check reservations from server
         const serverConflict = allReservations.some(res => {
           if (res.roomId !== roomId || res.status === 'Cancelled') return false;
@@ -568,7 +613,7 @@ export function ReservationClientPage({
       
       return null;
 
-  }, [allReservations, cart, timeSlots, room1Name, room2Name]);
+  }, [allReservations, cart, effectiveHoldTables, timeSlots, room1Name, room2Name]);
   
   const processTokenPayment = async (details: ConfirmationDetails) => {
     setIsSubmitting(true);
@@ -713,11 +758,9 @@ export function ReservationClientPage({
 
     const dateStr = dateToHktYmd(selectedDate);
     const isExpired = isMounted && isHalfHourSlotPastHkt(dateStr, time);
-    const isFull = (availability.get(time) || 0) >= 2;
-    const inDb = blockedSlots.has(time);
-    const isPendingBlockAdd = pendingBlockAdds.get(dateStr)?.has(time) ?? false;
-    const isPendingBlockRemove = pendingBlockRemoves.get(dateStr)?.has(time) ?? false;
-    const isBlocked = (inDb && !isPendingBlockRemove) || isPendingBlockAdd;
+    const held = effectiveHoldTables(dateStr, time);
+    const hold = held.size === 2 ? 'both' : held.has('1') ? '1' : held.has('2') ? '2' : 'none';
+    const isFull = (availability.get(time) || 0) >= 2 || slotIsUnavailable(dateStr, time);
     const isSelected = selectedSlots.some(
       (slot) => isSameDay(slot.date, selectedDate) && slot.time === time,
     );
@@ -725,11 +768,10 @@ export function ReservationClientPage({
     const { variant, className, isDisabled } = resolveSlotStatus({
       isExpired,
       isFull,
-      isBlocked,
+      isBlocked: hold === 'both',
       isSelected,
       isAdmin,
-      isPendingBlockAdd,
-      isPendingBlockRemove,
+      hold,
     });
     
     return (
@@ -814,7 +856,7 @@ export function ReservationClientPage({
                   <Button
                     variant="outline"
                     className="w-full bg-yellow-400 hover:bg-yellow-500 text-gray-900"
-                    onClick={stageSlotsForBlock}
+                    onClick={() => setHoldDialog('create')}
                     disabled={sortedSlots.length === 0 || isApplyingBlockChanges}
                   >
                     預留時段
@@ -828,7 +870,7 @@ export function ReservationClientPage({
                     {isApplyingBlockChanges && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                     確定更新狀態
                     {hasPendingBlockChanges && (
-                      <span className="ml-1 text-xs">({pendingBlockChangeCount})</span>
+                      <span className="ml-1 text-xs">({pendingHoldChangeCount})</span>
                     )}
                   </Button>
                 </div>
@@ -872,6 +914,11 @@ export function ReservationClientPage({
                       <p className="text-sm text-muted-foreground">
                         共 {sortedSlots.length * 0.5} 小時
                       </p>
+                      {determineRoomForBooking(sortedSlots) && (
+                        <p className="text-base font-semibold text-primary">
+                          預訂{determineRoomForBooking(sortedSlots)!.roomName.replace('房間', '枱號')}
+                        </p>
+                      )}
                     </>
                   )}
                 </div>
@@ -941,7 +988,7 @@ export function ReservationClientPage({
         onOpenChange={setIsConfirmationOpen}
         reservationData={
           sortedSlots.length > 0 ? {
-            roomName: determineRoomForBooking(sortedSlots)?.roomName || '枱號',
+            roomName: (determineRoomForBooking(sortedSlots)?.roomName || '枱號').replace('房間', '枱號'),
             date: sortedSlots[0].date,
             startTime: sortedSlots[0].time,
             endTime: getEndTime(sortedSlots[sortedSlots.length - 1].time),
@@ -958,6 +1005,43 @@ export function ReservationClientPage({
         userBalance={user?.role?.toLowerCase() === 'admin' ? Infinity : user?.tokens}
       />
 
+      <Dialog open={holdDialog !== null} onOpenChange={(open) => { if (!open) setHoldDialog(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{holdDialog === 'create' ? '選擇預留枱號' : '調整預留'}</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-2">
+            {holdDialog === 'create' && (
+              <>
+                <Button className="bg-yellow-400 text-gray-900 hover:bg-yellow-500" onClick={() => stageSlotsForBlock('1')}>枱號1</Button>
+                <Button className="bg-sky-200 text-gray-900 hover:bg-sky-300" onClick={() => stageSlotsForBlock('2')}>枱號2</Button>
+              </>
+            )}
+            {holdDialog && holdDialog !== 'create' && selectedDate && effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).size === 2 && (
+              <>
+                <Button variant="outline" onClick={() => stageHoldRemoval(holdDialog, '1')}>取消枱號1預留</Button>
+                <Button variant="outline" onClick={() => stageHoldRemoval(holdDialog, '2')}>取消枱號2預留</Button>
+              </>
+            )}
+            {holdDialog && holdDialog !== 'create' && selectedDate && effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).size === 1 && (
+              <>
+                <Button onClick={() => {
+                  setSelectedSlots([{ date: selectedDate, time: holdDialog }]);
+                  setHoldDialog(null);
+                }}>
+                  預約付費
+                </Button>
+                {effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).has('1') ? (
+                  <Button className="bg-sky-200 text-gray-900 hover:bg-sky-300" onClick={() => { stageHoldAdd(dateToHktYmd(selectedDate), holdDialog, '2'); setHoldDialog(null); }}>枱號2</Button>
+                ) : (
+                  <Button className="bg-yellow-400 text-gray-900 hover:bg-yellow-500" onClick={() => { stageHoldAdd(dateToHktYmd(selectedDate), holdDialog, '1'); setHoldDialog(null); }}>枱號1</Button>
+                )}
+                <Button variant="outline" onClick={() => stageHoldRemoval(holdDialog, effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).has('1') ? '1' : '2')}>取消預留</Button>
+              </>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
       <AlertDialog open={isConflictDialogOpen} onOpenChange={setIsConflictDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>

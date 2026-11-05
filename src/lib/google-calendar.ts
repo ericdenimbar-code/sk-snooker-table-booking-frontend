@@ -35,7 +35,11 @@ const CALENDAR_ID_DOOR_CONTROL_1B = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_
 const CALENDAR_ID_DOOR_CONTROL_2A = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2A?.trim();
 const CALENDAR_ID_DOOR_CONTROL_2B = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_2B?.trim();
 const CALENDAR_ID_DOOR_CONTROL_TEMP = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_temp?.trim();
-const CALENDAR_ID_DOOR_CONTROL_MULTI = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_multi?.trim();
+const CALENDAR_ID_DOOR_CONTROL_HOLD_1 = (
+  process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_Holdtable1
+  || process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_multi
+)?.trim();
+const CALENDAR_ID_DOOR_CONTROL_HOLD_2 = process.env.GOOGLE_CALENDAR_ID_DOOR_CONTROL_HoldTable2?.trim();
 
 const hasGoogleConfig = SERVICE_ACCOUNT_EMAIL && PRIVATE_KEY && CALENDAR_ID_ROOM_1 && CALENDAR_ID_ROOM_2 && CALENDAR_ID_DOOR_CONTROL_1A && CALENDAR_ID_DOOR_CONTROL_1B && CALENDAR_ID_DOOR_CONTROL_2A && CALENDAR_ID_DOOR_CONTROL_2B;
 
@@ -528,10 +532,16 @@ export async function recreateReservationCalendarEvents(params: {
     };
 }
 
+export function holdCalendarId(table: '1' | '2'): string | undefined {
+  return table === '1' ? CALENDAR_ID_DOOR_CONTROL_HOLD_1 : CALENDAR_ID_DOOR_CONTROL_HOLD_2;
+}
+
 /**
- * 多重門禁日曆。標題由功能項目傳入（例如預留時段為 MEETING），此處不決定項目名稱。
+ * 寫入指定的預留／門禁日曆。標題由呼叫端傳入。
  */
 export async function applyDoorMultiControlCalendar(params: {
+  calendarId: string | undefined;
+  missingCalendarMessage: string;
   title: string;
   toCreate: { eventKey: string; startIso: string; endIso: string; description: string }[];
   toDeleteEventKeys: string[];
@@ -542,8 +552,8 @@ export async function applyDoorMultiControlCalendar(params: {
   if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY) {
     return { ok: false, createdKeys, deletedKeys, error: 'Google Calendar 未設定服務帳號。' };
   }
-  if (!CALENDAR_ID_DOOR_CONTROL_MULTI) {
-    return { ok: false, createdKeys, deletedKeys, error: '缺少 GOOGLE_CALENDAR_ID_DOOR_CONTROL_multi。' };
+  if (!params.calendarId) {
+    return { ok: false, createdKeys, deletedKeys, error: params.missingCalendarMessage };
   }
 
   const errors: string[] = [];
@@ -551,7 +561,7 @@ export async function applyDoorMultiControlCalendar(params: {
   for (const eventKey of params.toDeleteEventKeys) {
     try {
       await calendar.events.delete({
-        calendarId: CALENDAR_ID_DOOR_CONTROL_MULTI,
+        calendarId: params.calendarId,
         eventId: getGoogleCalendarEventId(eventKey),
       });
       deletedKeys.push(eventKey);
@@ -566,7 +576,7 @@ export async function applyDoorMultiControlCalendar(params: {
   }
 
   for (const item of params.toCreate) {
-    const created = await createEvent(CALENDAR_ID_DOOR_CONTROL_MULTI, {
+    const created = await createEvent(params.calendarId, {
       summary: params.title,
       description: item.description,
       start: item.startIso,
@@ -584,11 +594,13 @@ export async function applyDoorMultiControlCalendar(params: {
   return { ok: true, createdKeys, deletedKeys };
 }
 
-/** 離場關閉所有器材：多重門禁日曆一筆 CLOSEALL，由現在起 5 分鐘。 */
+/** 離場關閉所有器材：寫入枱號 1 預留日曆一筆 CLOSEALL，由現在起 5 分鐘。 */
 export async function createFacilityCloseAllEvent(now = new Date()): Promise<{ ok: boolean; error?: string }> {
   const end = new Date(now.getTime() + 5 * 60 * 1000);
   const control = DOOR_MULTI_CONTROLS.closeAll;
   return applyDoorMultiControlCalendar({
+    calendarId: CALENDAR_ID_DOOR_CONTROL_HOLD_1,
+    missingCalendarMessage: '缺少 GOOGLE_CALENDAR_ID_DOOR_CONTROL_Holdtable1。',
     title: control.title,
     toCreate: [{
       eventKey: `door-multi:${control.key}:${now.getTime()}`,

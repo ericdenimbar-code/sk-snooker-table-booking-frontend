@@ -4,6 +4,30 @@ import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 export const HKT = 'Asia/Hong_Kong';
 export const BLOCKED_SLOTS_COLLECTION = 'blockedSlots';
 
+export type HoldTable = '1' | '2';
+export type HoldsByTable = Record<HoldTable, string[]>;
+
+export function emptyHolds(): HoldsByTable {
+  return { '1': [], '2': [] };
+}
+
+function slotList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
+/** 舊資料只有單一 slots，那些事件寫在枱號 1 的預留日曆。 */
+export function parseHoldsFromDoc(data: Record<string, unknown> | undefined): HoldsByTable {
+  const holds = data?.holds;
+  if (holds && typeof holds === 'object') {
+    const record = holds as Record<string, unknown>;
+    if ('1' in record || '2' in record) {
+      return { '1': slotList(record['1']), '2': slotList(record['2']) };
+    }
+  }
+  return { '1': slotList(data?.slots), '2': [] };
+}
+
 /** 48 half-hour slots from 00:00 to 23:30 */
 export function generateHalfHourSlots(): string[] {
   return Array.from({ length: 48 }, (_, i) => {

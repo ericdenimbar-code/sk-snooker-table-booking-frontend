@@ -8,7 +8,7 @@ import { Terminal } from 'lucide-react';
 import { db } from '@/lib/firebase-admin';
 import Link from 'next/link';
 import { formatInTimeZone } from 'date-fns-tz';
-import { BLOCKED_SLOTS_COLLECTION, HKT } from '@/lib/blocked-slots';
+import { BLOCKED_SLOTS_COLLECTION, emptyHolds, HKT, parseHoldsFromDoc, type HoldsByTable } from '@/lib/blocked-slots';
 
 export default async function NewReservationPage() {
     // This server component no longer fetches all reservations.
@@ -51,12 +51,12 @@ export default async function NewReservationPage() {
 
     // We now pass an empty array for initialReservations. The client will handle fetching.
     const todayHkt = formatInTimeZone(new Date(), HKT, 'yyyy-MM-dd');
-    let initialBlockedSlots: string[] = [];
+    let initialHolds: HoldsByTable = emptyHolds();
     try {
         const blockedDoc = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(todayHkt).get();
-        initialBlockedSlots = blockedDoc.exists
-            ? (Array.isArray(blockedDoc.data()?.slots) ? blockedDoc.data()!.slots as string[] : [])
-            : [];
+        initialHolds = blockedDoc.exists
+            ? parseHoldsFromDoc(blockedDoc.data() as Record<string, unknown> | undefined)
+            : emptyHolds();
     } catch (err) {
         console.error('[new-reservation] Failed to load blockedSlots:', err);
     }
@@ -67,7 +67,7 @@ export default async function NewReservationPage() {
             room1Name={room1Settings.name}
             room2Name={room2Settings.name}
             initialReservations={[]}
-            initialBlockedSlots={initialBlockedSlots}
+            initialHolds={initialHolds}
             initialBlockedSlotsDate={todayHkt}
         />
     );

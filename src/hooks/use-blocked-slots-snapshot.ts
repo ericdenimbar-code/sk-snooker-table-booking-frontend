@@ -3,68 +3,63 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { BLOCKED_SLOTS_COLLECTION, dateToHktYmd } from '@/lib/blocked-slots';
+import {
+  BLOCKED_SLOTS_COLLECTION,
+  dateToHktYmd,
+  emptyHolds,
+  parseHoldsFromDoc,
+  type HoldsByTable,
+} from '@/lib/blocked-slots';
 import { getBlockedSlotsForDate } from '@/app/(main)/new-reservation/actions';
 
-/** Server poll when Firestore listener is slow or unavailable */
 const BLOCKED_SLOTS_POLL_MS = 10_000;
 
-function toSlotSet(slots: string[] | undefined): Set<string> {
-  return new Set(Array.isArray(slots) ? slots : []);
+export type HoldSets = Record<'1' | '2', Set<string>>;
+
+function toHoldSets(holds: HoldsByTable): HoldSets {
+  return { '1': new Set(holds['1']), '2': new Set(holds['2']) };
+}
+
+function holdsEqual(a: HoldSets, b: HoldSets): boolean {
+  return setsEqual(a['1'], b['1']) && setsEqual(a['2'], b['2']);
 }
 
 function setsEqual(a: Set<string>, b: Set<string>): boolean {
   if (a.size !== b.size) return false;
-  for (const v of a) {
-    if (!b.has(v)) return false;
+  for (const value of a) {
+    if (!b.has(value)) return false;
   }
   return true;
 }
 
 export type BlockedSlotsSnapshot = {
-  dbBlockedSlots: Set<string>;
-  removeSlotOptimistic: (slot: string) => void;
-  addSlotOptimistic: (slot: string) => void;
-  addSlotsOptimistic: (slots: string[]) => void;
+  holdSets: HoldSets;
   refetchBlockedSlots: () => Promise<void>;
 };
 
 export function useBlockedSlotsSnapshot(
   selectedDate: Date | undefined,
-  initialSlots: string[] = [],
+  initialHolds: HoldsByTable = emptyHolds(),
 ): BlockedSlotsSnapshot {
-  const [dbBlockedSlots, setDbBlockedSlots] = useState<Set<string>>(() => toSlotSet(initialSlots));
+  const [holdSets, setHoldSets] = useState<HoldSets>(() => toHoldSets(initialHolds));
   const prevDateRef = useRef<string | null>(null);
+
+  const applyHolds = useCallback((next: HoldSets) => {
+    setHoldSets((prev) => (holdsEqual(prev, next) ? prev : next));
+  }, []);
 
   const refetchBlockedSlots = useCallback(async () => {
     if (!selectedDate) return;
     const dateStr = dateToHktYmd(selectedDate);
     const result = await getBlockedSlotsForDate(dateStr);
-    if (result.success) {
-      const next = toSlotSet(result.slots);
-      setDbBlockedSlots((prev) => (setsEqual(prev, next) ? prev : next));
+    if (result.success && result.holds) {
+      applyHolds(toHoldSets(result.holds));
     }
-  }, [selectedDate]);
-
-  const removeSlotOptimistic = useCallback((slot: string) => {
-    setDbBlockedSlots((prev) => {
-      const next = new Set(prev);
-      next.delete(slot);
-      return next;
-    });
-  }, []);
-
-  const addSlotOptimistic = useCallback((slot: string) => {
-    setDbBlockedSlots((prev) => new Set([...prev, slot]));
-  }, []);
-
-  const addSlotsOptimistic = useCallback((slots: string[]) => {
-    setDbBlockedSlots((prev) => new Set([...prev, ...slots]));
-  }, []);
+  }, [applyHolds, selectedDate]);
 
   useEffect(() => {
     if (!selectedDate) {
-      setDbBlockedSlots(new Set());
+      setHoldSets(toHoldSets(emptyHolds()));
       prevDateRef.current = null;
       return;
     }
@@ -75,25 +70,19 @@ export function useBlockedSlotsSnapshot(
     let cancelled = false;
 
     if (prevDateRef.current !== null && prevDateRef.current !== dateStr) {
-      setDbBlockedSlots(new Set());
+      setHoldSets(toHoldSets(emptyHolds()));
     }
     prevDateRef.current = dateStr;
 
-    const applySlotsFromFirestore = (slots: unknown) => {
-      if (cancelled) return;
-      const next = toSlotSet(Array.isArray(slots) ? (slots as string[]) : undefined);
-      setDbBlockedSlots((prev) => (setsEqual(prev, next) ? prev : next));
-    };
-
-    // Immediate server fetch — works even without Firebase Auth
     void refetchBlockedSlots();
 
     const docRef = doc(db, BLOCKED_SLOTS_COLLECTION, dateStr);
     unsubscribeSnapshot = onSnapshot(
       docRef,
       (snap) => {
-        const slots = snap.exists() ? snap.data()?.slots : [];
-        applySlotsFromFirestore(slots);
+        if (cancelled) return;
+        const holds = parseHoldsFromDoc(snap.exists() ? snap.data() as Record<string, unknown> : undefined);
+        applyHolds(toHoldSets(holds));
       },
       (error) => {
         console.error('[blockedSlots] onSnapshot error', error);
@@ -120,13 +109,7 @@ export function useBlockedSlotsSnapshot(
       if (pollInterval) clearInterval(pollInterval);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [selectedDate, refetchBlockedSlots]);
+  }, [selectedDate, refetchBlockedSlots, applyHolds]);
 
-  return {
-    dbBlockedSlots,
-    removeSlotOptimistic,
-    addSlotOptimistic,
-    addSlotsOptimistic,
-    refetchBlockedSlots,
-  };
+  return { holdSets, refetchBlockedSlots };
 }

@@ -1,17 +1,12 @@
 /**
- * 多重門禁日曆（GOOGLE_CALENDAR_ID_DOOR_CONTROL_multi）依功能項目使用不同標題。
- * 新增控制手段時在此登記；日曆寫入只接收呼叫端傳入的標題，不綁定單一項目。
+ * 預留日曆依枱號分開：枱號 1 用 Holdtable1，枱號 2 用 HoldTable2。
+ * 標題由呼叫端傳入，預留時段本身不用 MEETING。
  */
 export const DOOR_MULTI_CONTROLS = {
-  /**
-   * 預留時段。
-   * 預訂頁不能選正在進行的半小時，所以日曆開始時間提前，讓接近當下的下一格可以立刻生效。
-   * 結束時間仍用時段正點，避免拉長到下一格。
-   */
+  /** 預留時段。開始與結束都用所選半小時的正點。 */
   reservedSlot: {
     key: 'reserved-slot',
-    title: 'MEETING',
-    calendarStartLeadMinutes: 18,
+    title: '預留時段',
   },
   /** 離場關閉所有器材。標題只屬於這項控制，不套用到其他多重日曆項目。 */
   closeAll: {
