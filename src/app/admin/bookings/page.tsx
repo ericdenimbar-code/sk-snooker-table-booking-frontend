@@ -1,8 +1,10 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Terminal } from "lucide-react";
+import { formatInTimeZone } from "date-fns-tz";
 import { db } from "@/lib/firebase-admin";
 import { getAdminBookingsInitialData } from "@/app/admin/bookings/actions";
+import { BLOCKED_SLOTS_COLLECTION, emptyHolds, HKT, parseHoldsFromDoc, type HoldsByTable } from "@/lib/blocked-slots";
 import { BookingsCalendar } from "./bookings-calendar";
 
 export default async function BookingsPage() {
@@ -25,6 +27,16 @@ export default async function BookingsPage() {
     }
 
   const initialResult = await getAdminBookingsInitialData();
+  const todayHkt = formatInTimeZone(new Date(), HKT, 'yyyy-MM-dd');
+  let initialHolds: HoldsByTable = emptyHolds();
+  try {
+    const holdDoc = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(todayHkt).get();
+    initialHolds = holdDoc.exists
+      ? parseHoldsFromDoc(holdDoc.data() as Record<string, unknown> | undefined)
+      : emptyHolds();
+  } catch (err) {
+    console.error('[admin/bookings] Failed to load blockedSlots:', err);
+  }
 
   return (
     <div className="flex flex-col gap-4 h-full">
@@ -45,6 +57,8 @@ export default async function BookingsPage() {
                 <BookingsCalendar
                   initialReservations={initialResult.reservations ?? []}
                   initialTempAccess={initialResult.accessCodes ?? []}
+                  initialHolds={initialHolds}
+                  initialHoldsDate={todayHkt}
                 />
             </CardContent>
         </Card>

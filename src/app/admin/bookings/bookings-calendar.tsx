@@ -23,6 +23,7 @@ import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescript
 import { useToast } from '@/hooks/use-toast';
 import type { Reservation, TemporaryAccess } from '@/types';
 import { cancelReservation, getAdminBookingsInitialData, updateAdminReservation, updateReservationSummary } from '@/app/admin/bookings/actions';
+import { getBlockedSlotsForDate } from '@/app/(main)/new-reservation/actions';
 import { getUserById } from '@/app/admin/users/actions';
 import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions';
 import { cn } from '@/lib/utils';
@@ -60,6 +61,8 @@ type HoldVisual = {
 type BookingsCalendarProps = {
   initialReservations: Reservation[];
   initialTempAccess: TemporaryAccess[];
+  initialHolds?: HoldsByTable;
+  initialHoldsDate?: string;
 };
 
 const timeToIndex = (time: string): number => {
@@ -77,14 +80,15 @@ function getHktAnchorDate(): Date {
   return new Date(y, mo - 1, d);
 }
 
-export function BookingsCalendar({ initialReservations, initialTempAccess }: BookingsCalendarProps) {
+export function BookingsCalendar({ initialReservations, initialTempAccess, initialHolds = emptyHolds(), initialHoldsDate }: BookingsCalendarProps) {
   const { toast } = useToast();
   const firestoreSession = useAdminFirestoreSession();
   const permissionDeniedToastShownRef = useRef(false);
   const [currentDate, setCurrentDate] = useState(getHktAnchorDate);
   const [reservations, setReservations] = useState<Reservation[]>(initialReservations);
   const [tempAccesses, setTempAccesses] = useState<TemporaryAccess[]>(initialTempAccess);
-  const [holds, setHolds] = useState<HoldsByTable>(emptyHolds);
+  const [holds, setHolds] = useState<HoldsByTable>(initialHolds);
+  const [holdsDate, setHoldsDate] = useState(initialHoldsDate ?? '');
   const [selectedEvent, setSelectedEvent] = useState<CombinedEvent | null>(null);
   const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
@@ -140,10 +144,12 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
   
   const displayedDays = useMemo(() => [currentDate], [currentDate]);
 
+  const dayYmd = formatInTimeZone(currentDate, HKT, 'yyyy-MM-dd');
+  const holdsForDay = holdsDate === dayYmd ? holds : emptyHolds();
+
   const holdVisuals = useMemo(() => {
-    const dayYmd = formatInTimeZone(currentDate, HKT, 'yyyy-MM-dd');
     return (['1', '2'] as const).flatMap((roomId) =>
-      mergeHalfHourSlots(holds[roomId]).flatMap((range) => {
+      mergeHalfHourSlots(holdsForDay[roomId]).flatMap((range) => {
         try {
           const start = getHktBookingStartUtc(dayYmd, range.start);
           const end = getAdminSlotPeriodHkt(dayYmd, range.start, range.end).validUntil;
@@ -160,7 +166,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
         }
       }),
     );
-  }, [currentDate, holds]);
+  }, [dayYmd, holdsForDay]);
 
   const getEventsForDay = useCallback((day: Date, filter: 'room1' | 'room2' | 'door') => {
     
@@ -184,17 +190,28 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
   }, [events]);
 
   useEffect(() => {
-    const dayYmd = formatInTimeZone(currentDate, HKT, 'yyyy-MM-dd');
-    return onSnapshot(
+    let cancelled = false;
+    void getBlockedSlotsForDate(dayYmd).then((result) => {
+      if (cancelled || !result.success || !result.holds) return;
+      setHolds(result.holds);
+      setHoldsDate(dayYmd);
+    });
+    const unsubscribe = onSnapshot(
       doc(db, BLOCKED_SLOTS_COLLECTION, dayYmd),
       (snap) => {
+        if (cancelled) return;
         setHolds(parseHoldsFromDoc(snap.exists() ? snap.data() as Record<string, unknown> : undefined));
+        setHoldsDate(dayYmd);
       },
       (error) => {
         console.error('[admin/bookings] blockedSlots onSnapshot failed', error);
       },
     );
-  }, [currentDate, listenerKey]);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [dayYmd, listenerKey]);
 
   useEffect(() => {
     const user = firestoreSession.user;
@@ -459,15 +476,15 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
               <div className="grid grid-cols-3 flex-1 overflow-y-auto">
                   {/* Room 1 */}
                   <div className="relative col-span-1 border-r">
-                     {timeSlots.map((_, i) => <div key={`r1-bg-${i}`} className="h-6 border-b"></div>)}
+                     {timeSlots.map((time) => <div key={`r1-bg-${time}`} className={cn('h-6 border-b', holdsForDay['1'].includes(time) && 'bg-yellow-400')}></div>)}
                      {getEventsForDay(displayedDays[0], 'room1').map(event => <EventButton key={event.id} event={event} currentDay={displayedDays[0]} onClick={handleEventClick} className="bg-primary hover:bg-primary/90" />)}
-                     {holdVisuals.filter((block) => block.roomId === '1').map((block) => <HoldBlock key={block.id} block={block} currentDay={displayedDays[0]} />)}
+                     {holdVisuals.filter((block) => block.roomId === '1').map((block) => <HoldBlock key={block.id} block={block} />)}
                   </div>
                   {/* Room 2 */}
                   <div className="relative col-span-1 border-r">
-                     {timeSlots.map((_, i) => <div key={`r2-bg-${i}`} className="h-6 border-b"></div>)}
+                     {timeSlots.map((time) => <div key={`r2-bg-${time}`} className={cn('h-6 border-b', holdsForDay['2'].includes(time) && 'bg-sky-200')}></div>)}
                      {getEventsForDay(displayedDays[0], 'room2').map(event => <EventButton key={event.id} event={event} currentDay={displayedDays[0]} onClick={handleEventClick} className="bg-accent-foreground hover:bg-accent-foreground/90" />)}
-                     {holdVisuals.filter((block) => block.roomId === '2').map((block) => <HoldBlock key={block.id} block={block} currentDay={displayedDays[0]} />)}
+                     {holdVisuals.filter((block) => block.roomId === '2').map((block) => <HoldBlock key={block.id} block={block} />)}
                   </div>
                    {/* Door Control */}
                   <div className="relative col-span-1">
@@ -533,10 +550,14 @@ function blockSpan(start: Date, end: Date, isOvernight: boolean, currentDay: Dat
   return { top: `${startSlots * 1.5}rem`, height: `${durationInSlots * 1.5}rem` };
 }
 
-const HoldBlock = ({ block, currentDay }: { block: HoldVisual; currentDay: Date }) => {
-  const span = blockSpan(block.start, block.end, block.isOvernight, currentDay);
-  if (!span) return null;
-  const timeText = `${formatInTimeZone(block.start, HKT, 'HH:mm')} - ${formatInTimeZone(block.end, HKT, 'HH:mm')}`;
+const HoldBlock = ({ block }: { block: HoldVisual }) => {
+  const startLabel = formatInTimeZone(block.start, HKT, 'HH:mm');
+  const endLabel = formatInTimeZone(block.end, HKT, 'HH:mm');
+  const startSlots = timeToIndex(startLabel);
+  let endSlots = timeToIndex(endLabel);
+  if (endSlots <= startSlots) endSlots = SLOTS_PER_DAY;
+  if (endSlots <= startSlots) return null;
+  const span = { top: `${startSlots * 1.5}rem`, height: `${(endSlots - startSlots) * 1.5}rem` };
   return (
     <div
       className={cn(
@@ -546,7 +567,7 @@ const HoldBlock = ({ block, currentDay }: { block: HoldVisual; currentDay: Date 
       style={span}
     >
       <p className="font-bold truncate">預留時段</p>
-      <p className="truncate">{timeText}</p>
+      <p className="truncate">{startLabel} - {endLabel}</p>
     </div>
   );
 };
