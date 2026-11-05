@@ -14,7 +14,7 @@ import { zhTW } from 'date-fns/locale';
 import { ChevronLeft, ChevronRight, Loader2, Ban, Phone, Hash, User, Building2, RefreshCw, QrCode as QrCodeIcon } from 'lucide-react';
 import Image from 'next/image';
 import qrcode from 'qrcode';
-import { collection, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
+import { collection, doc, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -28,6 +28,8 @@ import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions
 import { cn } from '@/lib/utils';
 import { db, auth } from '@/lib/firebase';
 import { getAdminSlotPeriodHkt, getHktBookingStartUtc } from '@/lib/hkt-temp-segment';
+import { BLOCKED_SLOTS_COLLECTION, emptyHolds, parseHoldsFromDoc, type HoldsByTable } from '@/lib/blocked-slots';
+import { mergeHalfHourSlots } from '@/lib/door-multi-controls';
 import { useAdminFirestoreSession } from '@/lib/use-admin-firestore-session';
 import {
   getAdminDayWindow,
@@ -42,6 +44,14 @@ import {
 
 type CombinedEvent = (Reservation | TemporaryAccess) & {
   eventType: 'reservation' | 'temp-access';
+  start: Date;
+  end: Date;
+  isOvernight: boolean;
+};
+
+type HoldVisual = {
+  id: string;
+  roomId: '1' | '2';
   start: Date;
   end: Date;
   isOvernight: boolean;
@@ -74,6 +84,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
   const [currentDate, setCurrentDate] = useState(getHktAnchorDate);
   const [reservations, setReservations] = useState<Reservation[]>(initialReservations);
   const [tempAccesses, setTempAccesses] = useState<TemporaryAccess[]>(initialTempAccess);
+  const [holds, setHolds] = useState<HoldsByTable>(emptyHolds);
   const [selectedEvent, setSelectedEvent] = useState<CombinedEvent | null>(null);
   const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
@@ -129,6 +140,28 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
   
   const displayedDays = useMemo(() => [currentDate], [currentDate]);
 
+  const holdVisuals = useMemo(() => {
+    const dayYmd = formatInTimeZone(currentDate, HKT, 'yyyy-MM-dd');
+    return (['1', '2'] as const).flatMap((roomId) =>
+      mergeHalfHourSlots(holds[roomId]).flatMap((range) => {
+        try {
+          const start = getHktBookingStartUtc(dayYmd, range.start);
+          const end = getAdminSlotPeriodHkt(dayYmd, range.start, range.end).validUntil;
+          if (!isValid(start) || !isValid(end)) return [];
+          return [{
+            id: `hold-${roomId}-${dayYmd}-${range.start}-${range.end}`,
+            roomId,
+            start,
+            end,
+            isOvernight: !isSameHktDay(start, end),
+          } satisfies HoldVisual];
+        } catch {
+          return [];
+        }
+      }),
+    );
+  }, [currentDate, holds]);
+
   const getEventsForDay = useCallback((day: Date, filter: 'room1' | 'room2' | 'door') => {
     
     return events.filter(event => {
@@ -149,6 +182,19 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
       return eventStartsToday || eventSpillsFromYesterday;
     });
   }, [events]);
+
+  useEffect(() => {
+    const dayYmd = formatInTimeZone(currentDate, HKT, 'yyyy-MM-dd');
+    return onSnapshot(
+      doc(db, BLOCKED_SLOTS_COLLECTION, dayYmd),
+      (snap) => {
+        setHolds(parseHoldsFromDoc(snap.exists() ? snap.data() as Record<string, unknown> : undefined));
+      },
+      (error) => {
+        console.error('[admin/bookings] blockedSlots onSnapshot failed', error);
+      },
+    );
+  }, [currentDate, listenerKey]);
 
   useEffect(() => {
     const user = firestoreSession.user;
@@ -415,11 +461,13 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
                   <div className="relative col-span-1 border-r">
                      {timeSlots.map((_, i) => <div key={`r1-bg-${i}`} className="h-6 border-b"></div>)}
                      {getEventsForDay(displayedDays[0], 'room1').map(event => <EventButton key={event.id} event={event} currentDay={displayedDays[0]} onClick={handleEventClick} className="bg-primary hover:bg-primary/90" />)}
+                     {holdVisuals.filter((block) => block.roomId === '1').map((block) => <HoldBlock key={block.id} block={block} currentDay={displayedDays[0]} />)}
                   </div>
                   {/* Room 2 */}
                   <div className="relative col-span-1 border-r">
                      {timeSlots.map((_, i) => <div key={`r2-bg-${i}`} className="h-6 border-b"></div>)}
                      {getEventsForDay(displayedDays[0], 'room2').map(event => <EventButton key={event.id} event={event} currentDay={displayedDays[0]} onClick={handleEventClick} className="bg-accent-foreground hover:bg-accent-foreground/90" />)}
+                     {holdVisuals.filter((block) => block.roomId === '2').map((block) => <HoldBlock key={block.id} block={block} currentDay={displayedDays[0]} />)}
                   </div>
                    {/* Door Control */}
                   <div className="relative col-span-1">
@@ -463,34 +511,49 @@ export function BookingsCalendar({ initialReservations, initialTempAccess }: Boo
   );
 }
 
+function blockSpan(start: Date, end: Date, isOvernight: boolean, currentDay: Date): { top: string; height: string } | null {
+  const isSpillOver = !isSameHktDay(start, currentDay);
+  let startSlots: number;
+  let endSlots: number;
+
+  if (isSpillOver) {
+    startSlots = 0;
+    endSlots = timeToIndex(formatInTimeZone(end, HKT, 'HH:mm'));
+  } else if (isOvernight && isSameHktDay(start, currentDay)) {
+    startSlots = timeToIndex(formatInTimeZone(start, HKT, 'HH:mm'));
+    endSlots = SLOTS_PER_DAY;
+  } else {
+    startSlots = timeToIndex(formatInTimeZone(start, HKT, 'HH:mm'));
+    endSlots = timeToIndex(formatInTimeZone(end, HKT, 'HH:mm'));
+    if (endSlots <= startSlots) endSlots = SLOTS_PER_DAY;
+  }
+
+  const durationInSlots = endSlots - startSlots;
+  if (durationInSlots <= 0) return null;
+  return { top: `${startSlots * 1.5}rem`, height: `${durationInSlots * 1.5}rem` };
+}
+
+const HoldBlock = ({ block, currentDay }: { block: HoldVisual; currentDay: Date }) => {
+  const span = blockSpan(block.start, block.end, block.isOvernight, currentDay);
+  if (!span) return null;
+  const timeText = `${formatInTimeZone(block.start, HKT, 'HH:mm')} - ${formatInTimeZone(block.end, HKT, 'HH:mm')}`;
+  return (
+    <div
+      className={cn(
+        'absolute w-full p-1 rounded-lg text-xs leading-tight z-10 pointer-events-none text-gray-900',
+        block.roomId === '1' ? 'bg-yellow-400' : 'bg-sky-200',
+      )}
+      style={span}
+    >
+      <p className="font-bold truncate">預留時段</p>
+      <p className="truncate">{timeText}</p>
+    </div>
+  );
+};
+
 const EventButton = ({ event, currentDay, onClick, className }: { event: CombinedEvent, currentDay: Date, onClick: (e: CombinedEvent) => void, className?: string }) => {
-    
-    const isSpillOver = !isSameHktDay(event.start, currentDay);
-
-    let startSlots: number;
-    let endSlots: number;
-
-    if (isSpillOver) {
-      startSlots = 0;
-      endSlots = timeToIndex(formatInTimeZone(event.end, HKT, 'HH:mm'));
-    } else if (event.isOvernight && isSameHktDay(event.start, currentDay)) {
-      // 今日開始、跨午夜結束（例如 23:00–00:00 須畫到日末 24:00，不可把 00:00 當 slot 0）
-      startSlots = timeToIndex(formatInTimeZone(event.start, HKT, 'HH:mm'));
-      endSlots = SLOTS_PER_DAY;
-    } else {
-      startSlots = timeToIndex(formatInTimeZone(event.start, HKT, 'HH:mm'));
-      endSlots = timeToIndex(formatInTimeZone(event.end, HKT, 'HH:mm'));
-      if (endSlots <= startSlots) {
-        endSlots = SLOTS_PER_DAY;
-      }
-    }
-
-    const durationInSlots = endSlots - startSlots;
-
-    if (durationInSlots <= 0) return null;
-    
-    const top = `${startSlots * 1.5}rem`; // Each slot (30-min) is 1.5rem high
-    const height = `${durationInSlots * 1.5}rem`;
+    const span = blockSpan(event.start, event.end, event.isOvernight, currentDay);
+    if (!span) return null;
     
     const userName = event.eventType === 'reservation' ? event.userName : event.userEmail.split('@')[0];
     const summaryText = event.eventType === 'reservation'
@@ -503,7 +566,7 @@ const EventButton = ({ event, currentDay, onClick, className }: { event: Combine
         <button
             onClick={() => onClick(event)}
             className={cn("absolute w-full text-left p-1 rounded-lg text-white text-xs leading-tight transition-colors z-10", className)}
-            style={{ top, height }}
+            style={span}
         >
             <p className="font-bold truncate">{titleText}</p>
             <p className="truncate text-primary-foreground/80">{timeText}</p>

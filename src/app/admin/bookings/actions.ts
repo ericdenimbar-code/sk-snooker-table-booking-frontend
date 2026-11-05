@@ -19,7 +19,8 @@ import {
 import { sendBookingChangeEmail, sendQrCodeEmail } from '@/lib/email';
 import { getRoomSettings } from '@/app/admin/settings/actions';
 import { getAdminSlotPeriodHkt } from '@/lib/hkt-temp-segment';
-import { generateHalfHourSlots, isValidHalfHourSlot } from '@/lib/blocked-slots';
+import { BLOCKED_SLOTS_COLLECTION, expandBookingToHalfHourKeys, generateHalfHourSlots, isValidHalfHourSlot, parseHoldsFromDoc } from '@/lib/blocked-slots';
+import { halfHourEndHm } from '@/lib/door-multi-controls';
 import type { Reservation, TemporaryAccess } from '@/types';
 import {
   getAdminDayWindow,
@@ -300,6 +301,28 @@ async function updateAdminReservationInner(params: {
         return {
             success: false,
             error: `${roomLabel}在 ${conflict.startTime} - ${conflict.endTime} 已有預訂 (#${conflict.id})，無法轉移/延長`,
+        };
+    }
+
+    const holdKeys = expandBookingToHalfHourKeys(current.date, params.startTime, params.endTime);
+    const holdDates = [...new Set(holdKeys.map((key) => key.date))];
+    const heldByDate = new Map<string, Set<string>>();
+    await Promise.all(holdDates.map(async (date) => {
+        const holdSnap = await db!.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+        const holds = parseHoldsFromDoc(holdSnap.exists ? holdSnap.data() as Record<string, unknown> : undefined);
+        heldByDate.set(date, new Set(holds[params.roomId]));
+    }));
+    const heldOverlap = holdKeys.filter((key) => heldByDate.get(key.date)?.has(key.time));
+    if (heldOverlap.length > 0) {
+        const first = heldOverlap[0];
+        const last = heldOverlap[heldOverlap.length - 1];
+        const endLabel = halfHourEndHm(last.time);
+        const when = first.date === last.date
+            ? `${first.time} - ${endLabel}`
+            : `${first.date} ${first.time} - ${last.date} ${endLabel}`;
+        return {
+            success: false,
+            error: `${params.roomId}號枱在 ${when} 已預留，無法轉移/延長`,
         };
     }
 
