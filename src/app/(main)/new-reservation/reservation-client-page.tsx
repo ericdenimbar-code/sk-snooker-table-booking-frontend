@@ -885,7 +885,7 @@ export function ReservationClientPage({
                     預留時段
                   </Button>
                   <Button
-                    variant="outline"
+                    variant={hasPendingBlockChanges ? 'destructive' : 'outline'}
                     className="w-full"
                     onClick={handleConfirmBlockChanges}
                     disabled={!hasPendingBlockChanges || isApplyingBlockChanges}
