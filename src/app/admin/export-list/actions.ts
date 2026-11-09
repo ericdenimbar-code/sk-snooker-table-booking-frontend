@@ -2,9 +2,9 @@
 
 import { db } from '@/lib/firebase-admin';
 import { getRoomSettings } from '@/app/admin/settings/actions';
-import { expandBookingToHalfHourKeys } from '@/lib/blocked-slots';
+import { BLOCKED_SLOTS_COLLECTION, expandBookingToHalfHourKeys, holdNoteLabel, mergeHoldSlotsWithNotes, parseHoldNotesFromDoc, parseHoldsFromDoc } from '@/lib/blocked-slots';
 import type { Reservation } from '@/types';
-import { endOfMonth, format, startOfMonth } from 'date-fns';
+import { addDays, eachDayOfInterval, endOfMonth, format, parseISO, startOfMonth } from 'date-fns';
 import * as XLSX from 'xlsx';
 
 /** 專案預約資料存於 `reservations` 集合，以 `date`（yyyy-MM-dd）作為查詢欄位。 */
@@ -95,6 +95,58 @@ async function rowsForSheet(reservations: Reservation[]) {
   }));
 }
 
+async function holdRowsForMonth(startStr: string, endStr: string) {
+  if (!db) return [];
+  const days = eachDayOfInterval({ start: parseISO(startStr), end: parseISO(endStr) });
+  const snaps = await db.getAll(
+    ...days.map((day) => db!.collection(BLOCKED_SLOTS_COLLECTION).doc(format(day, 'yyyy-MM-dd'))),
+  );
+  const byDate = new Map(snaps.map((snap) => {
+    const data = snap.data() as Record<string, unknown> | undefined;
+    return [snap.id, { holds: parseHoldsFromDoc(data), notes: parseHoldNotesFromDoc(data) }] as const;
+  }));
+
+  type Range = { date: string; start: string; end: string; table: '1' | '2'; note: string; consumed?: boolean };
+  const ranges: Range[] = [];
+  for (const day of days) {
+    const date = format(day, 'yyyy-MM-dd');
+    const record = byDate.get(date);
+    if (!record) continue;
+    for (const table of ['1', '2'] as const) {
+      for (const range of mergeHoldSlotsWithNotes(record.holds[table], record.notes[table])) {
+        ranges.push({ date, ...range, table });
+      }
+    }
+  }
+
+  const rows = [];
+  for (const range of ranges) {
+    if (range.consumed) continue;
+    let end = range.end;
+    const nextDate = format(addDays(parseISO(range.date), 1), 'yyyy-MM-dd');
+    if (end === '00:00') {
+      const next = ranges.find((item) => !item.consumed && item.date === nextDate && item.table === range.table && item.start === '00:00' && item.note === range.note);
+      if (next) {
+        next.consumed = true;
+        end = next.end;
+      }
+    }
+    rows.push({
+      預約日期: range.date,
+      開始時間: range.start,
+      結束時間: end,
+      客戶名稱: '預留時段',
+      聯絡電話: '',
+      桌號: `${range.table}號枱`,
+      人數: '—',
+      狀態: '預留',
+      代幣: '',
+      摘要: range.note ? holdNoteLabel(range.note) : '',
+    });
+  }
+  return rows;
+}
+
 /**
  * 以 Firestore 的 orderBy + startAt/endAt 鎖定單一月份，不在記憶體全量篩選。
  */
@@ -151,7 +203,15 @@ export async function exportReservationsExcel(
     return { success: false, error: loaded.error ?? '讀取預約失敗' };
   }
 
-  const rows = await rowsForSheet(loaded.reservations);
+  const monthStart = startOfMonth(new Date(year, month - 1, 1));
+  const monthEnd = endOfMonth(monthStart);
+  const [reservationRows, holdRows] = await Promise.all([
+    rowsForSheet(loaded.reservations),
+    holdRowsForMonth(format(monthStart, 'yyyy-MM-dd'), format(monthEnd, 'yyyy-MM-dd')),
+  ]);
+  const rows = [...reservationRows, ...holdRows].sort((a, b) =>
+    `${a.預約日期} ${a.開始時間} ${a.桌號}`.localeCompare(`${b.預約日期} ${b.開始時間} ${b.桌號}`),
+  );
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '預約');
@@ -166,6 +226,6 @@ export async function exportReservationsExcel(
     success: true,
     fileName,
     base64: buf.toString('base64'),
-    rowCount: loaded.reservations.length,
+    rowCount: rows.length,
   };
 }

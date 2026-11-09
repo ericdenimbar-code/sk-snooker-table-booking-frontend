@@ -23,14 +23,13 @@ import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescript
 import { useToast } from '@/hooks/use-toast';
 import type { Reservation, TemporaryAccess } from '@/types';
 import { cancelReservation, getAdminBookingsInitialData, updateAdminReservation, updateReservationSummary } from '@/app/admin/bookings/actions';
-import { getBlockedSlotsForDate } from '@/app/(main)/new-reservation/actions';
+import { getBlockedSlotsForDate, updateHoldBlock } from '@/app/(main)/new-reservation/actions';
 import { getUserById } from '@/app/admin/users/actions';
 import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions';
 import { cn } from '@/lib/utils';
 import { db, auth } from '@/lib/firebase';
 import { getAdminSlotPeriodHkt, getHktBookingStartUtc } from '@/lib/hkt-temp-segment';
-import { BLOCKED_SLOTS_COLLECTION, emptyHolds, parseHoldsFromDoc, type HoldsByTable } from '@/lib/blocked-slots';
-import { mergeHalfHourSlots } from '@/lib/door-multi-controls';
+import { BLOCKED_SLOTS_COLLECTION, emptyHoldNotes, emptyHolds, holdNoteLabel, mergeHoldSlotsWithNotes, parseHoldNotesFromDoc, parseHoldsFromDoc, type HoldNotesByTable, type HoldsByTable } from '@/lib/blocked-slots';
 import { useAdminFirestoreSession } from '@/lib/use-admin-firestore-session';
 import {
   getAdminDayWindow,
@@ -53,6 +52,10 @@ type CombinedEvent = (Reservation | TemporaryAccess) & {
 type HoldVisual = {
   id: string;
   roomId: '1' | '2';
+  date: string;
+  startTime: string;
+  endTime: string;
+  note: string;
   start: Date;
   end: Date;
   isOvernight: boolean;
@@ -62,6 +65,7 @@ type BookingsCalendarProps = {
   initialReservations: Reservation[];
   initialTempAccess: TemporaryAccess[];
   initialHolds?: HoldsByTable;
+  initialHoldNotes?: HoldNotesByTable;
   initialHoldsDate?: string;
 };
 
@@ -80,7 +84,7 @@ function getHktAnchorDate(): Date {
   return new Date(y, mo - 1, d);
 }
 
-export function BookingsCalendar({ initialReservations, initialTempAccess, initialHolds = emptyHolds(), initialHoldsDate }: BookingsCalendarProps) {
+export function BookingsCalendar({ initialReservations, initialTempAccess, initialHolds = emptyHolds(), initialHoldNotes = emptyHoldNotes(), initialHoldsDate }: BookingsCalendarProps) {
   const { toast } = useToast();
   const firestoreSession = useAdminFirestoreSession();
   const permissionDeniedToastShownRef = useRef(false);
@@ -88,7 +92,9 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
   const [reservations, setReservations] = useState<Reservation[]>(initialReservations);
   const [tempAccesses, setTempAccesses] = useState<TemporaryAccess[]>(initialTempAccess);
   const [holds, setHolds] = useState<HoldsByTable>(initialHolds);
+  const [holdNotes, setHoldNotes] = useState<HoldNotesByTable>(initialHoldNotes);
   const [holdsDate, setHoldsDate] = useState(initialHoldsDate ?? '');
+  const [selectedHold, setSelectedHold] = useState<HoldVisual | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<CombinedEvent | null>(null);
   const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
@@ -148,8 +154,10 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
   const holdsForDay = holdsDate === dayYmd ? holds : emptyHolds();
 
   const holdVisuals = useMemo(() => {
+    const source = holdsDate === dayYmd ? holds : emptyHolds();
+    const notes = holdsDate === dayYmd ? holdNotes : emptyHoldNotes();
     return (['1', '2'] as const).flatMap((roomId) =>
-      mergeHalfHourSlots(holdsForDay[roomId]).flatMap((range) => {
+      mergeHoldSlotsWithNotes(source[roomId], notes[roomId]).flatMap((range) => {
         try {
           const start = getHktBookingStartUtc(dayYmd, range.start);
           const end = getAdminSlotPeriodHkt(dayYmd, range.start, range.end).validUntil;
@@ -157,6 +165,10 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
           return [{
             id: `hold-${roomId}-${dayYmd}-${range.start}-${range.end}`,
             roomId,
+            date: dayYmd,
+            startTime: range.start,
+            endTime: range.end,
+            note: range.note,
             start,
             end,
             isOvernight: !isSameHktDay(start, end),
@@ -166,7 +178,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
         }
       }),
     );
-  }, [dayYmd, holdsForDay]);
+  }, [dayYmd, holds, holdNotes, holdsDate]);
 
   const getEventsForDay = useCallback((day: Date, filter: 'room1' | 'room2' | 'door') => {
     
@@ -194,13 +206,16 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
     void getBlockedSlotsForDate(dayYmd).then((result) => {
       if (cancelled || !result.success || !result.holds) return;
       setHolds(result.holds);
+      setHoldNotes(result.holdNotes ?? emptyHoldNotes());
       setHoldsDate(dayYmd);
     });
     const unsubscribe = onSnapshot(
       doc(db, BLOCKED_SLOTS_COLLECTION, dayYmd),
       (snap) => {
         if (cancelled) return;
-        setHolds(parseHoldsFromDoc(snap.exists() ? snap.data() as Record<string, unknown> : undefined));
+        const data = snap.exists() ? snap.data() as Record<string, unknown> : undefined;
+        setHolds(parseHoldsFromDoc(data));
+        setHoldNotes(parseHoldNotesFromDoc(data));
         setHoldsDate(dayYmd);
       },
       (error) => {
@@ -478,13 +493,13 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
                   <div className="relative col-span-1 border-r">
                      {timeSlots.map((time) => <div key={`r1-bg-${time}`} className={cn('h-6 border-b', holdsForDay['1'].includes(time) && 'bg-yellow-400')}></div>)}
                      {getEventsForDay(displayedDays[0], 'room1').map(event => <EventButton key={event.id} event={event} currentDay={displayedDays[0]} onClick={handleEventClick} className="bg-primary hover:bg-primary/90" />)}
-                     {holdVisuals.filter((block) => block.roomId === '1').map((block) => <HoldBlock key={block.id} block={block} />)}
+                     {holdVisuals.filter((block) => block.roomId === '1').map((block) => <HoldBlock key={block.id} block={block} onClick={setSelectedHold} />)}
                   </div>
                   {/* Room 2 */}
                   <div className="relative col-span-1 border-r">
                      {timeSlots.map((time) => <div key={`r2-bg-${time}`} className={cn('h-6 border-b', holdsForDay['2'].includes(time) && 'bg-sky-200')}></div>)}
                      {getEventsForDay(displayedDays[0], 'room2').map(event => <EventButton key={event.id} event={event} currentDay={displayedDays[0]} onClick={handleEventClick} className="bg-accent-foreground hover:bg-accent-foreground/90" />)}
-                     {holdVisuals.filter((block) => block.roomId === '2').map((block) => <HoldBlock key={block.id} block={block} />)}
+                     {holdVisuals.filter((block) => block.roomId === '2').map((block) => <HoldBlock key={block.id} block={block} onClick={setSelectedHold} />)}
                   </div>
                    {/* Door Control */}
                   <div className="relative col-span-1">
@@ -509,6 +524,18 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
         }}
       />
       <CancellationDialog event={selectedEvent} open={isCancelDialogOpen} onOpenChange={setIsCancelDialogOpen} isSubmitting={isSubmitting} onConfirm={handleCancellation} />
+      <EditHoldDialog
+        block={selectedHold}
+        open={!!selectedHold}
+        onOpenChange={(open) => { if (!open) setSelectedHold(null); }}
+        onSaved={(days) => {
+          const current = days.find((day) => day.date === dayYmd);
+          if (!current) return;
+          setHolds(current.holds);
+          setHoldNotes(current.holdNotes);
+          setHoldsDate(dayYmd);
+        }}
+      />
       <EditBookingDialog
         event={selectedEvent}
         open={isEditOpen}
@@ -550,25 +577,162 @@ function blockSpan(start: Date, end: Date, isOvernight: boolean, currentDay: Dat
   return { top: `${startSlots * 1.5}rem`, height: `${durationInSlots * 1.5}rem` };
 }
 
-const HoldBlock = ({ block }: { block: HoldVisual }) => {
-  const startLabel = formatInTimeZone(block.start, HKT, 'HH:mm');
-  const endLabel = formatInTimeZone(block.end, HKT, 'HH:mm');
+const HoldBlock = ({ block, onClick }: { block: HoldVisual; onClick: (block: HoldVisual) => void }) => {
+  const startLabel = block.startTime;
+  const endLabel = block.endTime;
   const startSlots = timeToIndex(startLabel);
   let endSlots = timeToIndex(endLabel);
   if (endSlots <= startSlots) endSlots = SLOTS_PER_DAY;
   if (endSlots <= startSlots) return null;
   const span = { top: `${startSlots * 1.5}rem`, height: `${(endSlots - startSlots) * 1.5}rem` };
   return (
-    <div
+    <button
+      type="button"
+      onClick={() => onClick(block)}
       className={cn(
-        'absolute w-full p-1 rounded-lg text-xs leading-tight z-10 pointer-events-none text-gray-900',
+        'absolute w-full p-1 rounded-lg text-left text-xs leading-tight z-10 text-gray-900 transition-opacity hover:opacity-90',
         block.roomId === '1' ? 'bg-yellow-400' : 'bg-sky-200',
       )}
       style={span}
     >
-      <p className="font-bold truncate">預留時段</p>
+      <p className="font-bold truncate">{holdNoteLabel(block.note)}</p>
       <p className="truncate">{startLabel} - {endLabel}</p>
-    </div>
+    </button>
+  );
+};
+
+const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
+  block: HoldVisual | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSaved: (days: { date: string; holds: HoldsByTable; holdNotes: HoldNotesByTable }[]) => void;
+}) => {
+  const { toast } = useToast();
+  const [roomId, setRoomId] = useState<'1' | '2'>('1');
+  const [startTime, setStartTime] = useState('10:00');
+  const [endTime, setEndTime] = useState('11:00');
+  const [note, setNote] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+
+  useEffect(() => {
+    if (!open || !block) return;
+    setRoomId(block.roomId);
+    setStartTime(block.startTime);
+    setEndTime(block.endTime);
+    setNote(block.note);
+    setErrorMessage('');
+  }, [open, block?.id]);
+
+  if (!block) return null;
+
+  const save = async (nextRoomId: '1' | '2', nextStart: string, nextEnd: string, nextNote: string) => {
+    setIsSaving(true);
+    setErrorMessage('');
+    try {
+      const raw = localStorage.getItem('user');
+      const adminUserId = raw ? (JSON.parse(raw) as { id?: string }).id : '';
+      if (!adminUserId) {
+        setErrorMessage('找不到管理員身分，請重新登入。');
+        return;
+      }
+      const result = await updateHoldBlock({
+        adminUserId,
+        date: block.date,
+        fromTable: block.roomId,
+        fromStart: block.startTime,
+        fromEnd: block.endTime,
+        toTable: nextRoomId,
+        toStart: nextStart,
+        toEnd: nextEnd,
+        note: nextNote,
+      });
+      if (!result.success) {
+        const message = result.error || '無法修改預留。';
+        setErrorMessage(message);
+        toast({ variant: 'destructive', title: '無法修改預留', description: message });
+        return;
+      }
+      onSaved(result.days ?? []);
+      toast({
+        title: '預留已更新',
+        description: result.calendarWarning || '時間與備注已更新，前台與日曆會一併變更，不會發送電郵。',
+        variant: result.calendarWarning ? 'destructive' : 'default',
+      });
+      onOpenChange(false);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : '修改預留時發生錯誤。';
+      setErrorMessage(message);
+      toast({ variant: 'destructive', title: '無法修改預留', description: message });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>修改預訂</DialogTitle>
+          <DialogDescription>
+            {block.date}　預留時段。結束時間早於開始時間代表跨至翌日。修改會立即更新前台與 Google Calendar，不會發送電郵。
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="grid gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const data = new FormData(e.currentTarget);
+            const nextRoom = data.get('roomId') === '2' ? '2' : '1';
+            const nextStart = String(data.get('startTime') ?? '');
+            const nextEnd = String(data.get('endTime') ?? '');
+            const nextNote = String(data.get('note') ?? '');
+            void save(nextRoom, nextStart, nextEnd, nextNote);
+          }}
+        >
+          {errorMessage && (
+            <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{errorMessage}</p>
+          )}
+          <label className="grid gap-1 text-sm">
+            枱號
+            <select name="roomId" className="h-10 rounded-md border bg-background px-3" value={roomId} onChange={(e) => setRoomId(e.target.value as '1' | '2')}>
+              <option value="1">枱號 1</option>
+              <option value="2">枱號 2</option>
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm">
+            開始時間
+            <select name="startTime" className="h-10 rounded-md border bg-background px-3" value={startTime} onChange={(e) => setStartTime(e.target.value)}>
+              {HALF_HOUR_OPTIONS.map((time) => <option key={`hold-start-${time}`} value={time}>{time}</option>)}
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm">
+            結束時間
+            <select name="endTime" className="h-10 rounded-md border bg-background px-3" value={endTime} onChange={(e) => setEndTime(e.target.value)}>
+              {HALF_HOUR_OPTIONS.map((time) => <option key={`hold-end-${time}`} value={time}>{time}</option>)}
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm">
+            備注
+            <Textarea
+              name="note"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              className="h-28 resize-none text-sm font-semibold"
+              aria-label="備注"
+            />
+            {note.trim() && <p className="text-sm font-semibold">顯示為 {holdNoteLabel(note)}</p>}
+          </label>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>返回</Button>
+            <Button type="submit" disabled={isSaving}>
+              {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              確定修改
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 };
 

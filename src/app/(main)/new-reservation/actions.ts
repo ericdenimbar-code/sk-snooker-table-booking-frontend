@@ -4,10 +4,11 @@
 import { db } from '@/lib/firebase-admin';
 import type { Reservation, TemporaryAccess } from '@/types';
 import { revalidatePath } from 'next/cache';
-import { applyDoorMultiControlCalendar, createGoogleCalendarEvent, holdCalendarId } from '@/lib/google-calendar';
+import { applyDoorMultiControlCalendar, createGoogleCalendarEvent, holdCalendarId, patchHoldEventDescription } from '@/lib/google-calendar';
 import { getAdminSlotPeriodHkt } from '@/lib/hkt-temp-segment';
 import {
   DOOR_MULTI_CONTROLS,
+  expandHalfHoursUntil,
   parseDoorMultiEvents,
   reconcileDoorMultiCoverage,
   type DoorMultiEventRecord,
@@ -25,8 +26,12 @@ import {
   emptyHolds,
   expandBookingToHalfHourKeys,
   generateHalfHourSlots,
+  holdNoteLabel,
+  isHalfHourSlotPastHkt,
   isValidHalfHourSlot,
+  parseHoldNotesFromDoc,
   parseHoldsFromDoc,
+  type HoldNotesByTable,
   type HoldTable,
   type HoldsByTable,
 } from '@/lib/blocked-slots';
@@ -55,12 +60,15 @@ async function getHoldsForDate(date: string): Promise<HoldsByTable> {
     return parseHoldsFromDoc(docSnap.data() as Record<string, unknown> | undefined);
 }
 
-export async function getBlockedSlotsForDate(date: string): Promise<ServerActionResponse & { holds?: HoldsByTable; slots?: string[] }> {
+export async function getBlockedSlotsForDate(date: string): Promise<ServerActionResponse & { holds?: HoldsByTable; holdNotes?: HoldNotesByTable; slots?: string[] }> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
     try {
-        const holds = await getHoldsForDate(date);
+        const docSnap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+        const data = docSnap.exists ? docSnap.data() as Record<string, unknown> : undefined;
+        const holds = parseHoldsFromDoc(data);
+        const holdNotes = parseHoldNotesFromDoc(data);
         const slots = [...new Set([...holds['1'], ...holds['2']])];
-        return { success: true, holds, slots };
+        return { success: true, holds, holdNotes, slots };
     } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         return { success: false, error: `讀取預留時段失敗: ${msg}` };
@@ -223,6 +231,141 @@ export async function applyBlockedSlotChanges(
 
     const calendarWarning = await syncReservedSlotsToHoldCalendars(calendarPlans);
     return calendarWarning ? { success: true, calendarWarning } : { success: true };
+}
+
+export async function updateHoldBlock(params: {
+    adminUserId: string;
+    date: string;
+    fromTable: HoldTable;
+    fromStart: string;
+    fromEnd: string;
+    toTable: HoldTable;
+    toStart: string;
+    toEnd: string;
+    note: string;
+}): Promise<ServerActionResponse & { days?: { date: string; holds: HoldsByTable; holdNotes: HoldNotesByTable }[] }> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
+    const authError = await assertAdminUser(params.adminUserId);
+    if (authError) return { success: false, error: authError };
+
+    const timeSlots = generateHalfHourSlots();
+    for (const time of [params.fromStart, params.fromEnd, params.toStart, params.toEnd]) {
+        if (!isValidHalfHourSlot(time, timeSlots)) return { success: false, error: '時段必須是半小時。' };
+    }
+    if (params.fromStart === params.fromEnd || params.toStart === params.toEnd) {
+        return { success: false, error: '開始與結束時間不能相同。' };
+    }
+
+    const oldKeys = expandBookingToHalfHourKeys(params.date, params.fromStart, params.fromEnd, timeSlots);
+    const newKeys = expandBookingToHalfHourKeys(params.date, params.toStart, params.toEnd, timeSlots);
+    if (oldKeys.length === 0 || newKeys.length === 0) {
+        return { success: false, error: '找不到要修改的預留時段。' };
+    }
+
+    const dates = [...new Set([...oldKeys, ...newKeys].map((slot) => slot.date))];
+    const docs = new Map<string, Record<string, unknown> | undefined>();
+    for (const date of dates) {
+        const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+        docs.set(date, snap.exists ? snap.data() as Record<string, unknown> : undefined);
+    }
+
+    for (const slot of oldKeys) {
+        const holds = parseHoldsFromDoc(docs.get(slot.date));
+        if (!holds[params.fromTable].includes(slot.time)) {
+            return { success: false, error: '預留時段已變更，請重新整理。' };
+        }
+    }
+
+    const kept = new Set(
+        params.fromTable === params.toTable
+            ? oldKeys.filter((slot) => newKeys.some((next) => next.date === slot.date && next.time === slot.time)).map((slot) => `${slot.date}|${slot.time}`)
+            : [],
+    );
+    const toAdd: { date: string; time: string; table: HoldTable }[] = [];
+    const toRemove: { date: string; time: string; table: HoldTable }[] = [];
+
+    for (const slot of newKeys) {
+        if (kept.has(`${slot.date}|${slot.time}`)) continue;
+        const holds = parseHoldsFromDoc(docs.get(slot.date));
+        if (holds[params.toTable].includes(slot.time)) {
+            return { success: false, error: `${params.toTable}號枱在 ${slot.time} 已預留，不能重疊。` };
+        }
+        if (isHalfHourSlotPastHkt(slot.date, slot.time)) {
+            return { success: false, error: '不能把預留改到已過的時段。' };
+        }
+        toAdd.push({ date: slot.date, time: slot.time, table: params.toTable });
+    }
+    for (const slot of oldKeys) {
+        if (kept.has(`${slot.date}|${slot.time}`)) continue;
+        toRemove.push({ date: slot.date, time: slot.time, table: params.fromTable });
+    }
+
+    let calendarWarning: string | undefined;
+    if (toAdd.length > 0 || toRemove.length > 0) {
+        const changes = dates.map((date) => ({
+            date,
+            toAdd: toAdd.filter((item) => item.date === date).map(({ time, table }) => ({ time, table })),
+            toRemove: toRemove.filter((item) => item.date === date).map(({ time, table }) => ({ time, table })),
+        })).filter((change) => change.toAdd.length > 0 || change.toRemove.length > 0);
+        const moved = await applyBlockedSlotChanges(params.adminUserId, changes);
+        if (!moved.success) return { success: false, error: moved.error };
+        calendarWarning = moved.calendarWarning;
+    }
+
+    const note = params.note.trim();
+    for (const date of dates) {
+        const fresh = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+        const notes = parseHoldNotesFromDoc(fresh.data() as Record<string, unknown> | undefined);
+        for (const slot of oldKeys.filter((item) => item.date === date)) delete notes[params.fromTable][slot.time];
+        for (const slot of newKeys.filter((item) => item.date === date)) {
+            if (note) notes[params.toTable][slot.time] = note;
+            else delete notes[params.toTable][slot.time];
+        }
+        await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).set({ holdNotes: notes }, { merge: true });
+    }
+
+    const descriptionWarning = await refreshHoldDescriptions(dates);
+    if (descriptionWarning) calendarWarning = calendarWarning ?? descriptionWarning;
+
+    const days = [];
+    for (const date of dates) {
+        const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+        const data = snap.data() as Record<string, unknown> | undefined;
+        days.push({ date, holds: parseHoldsFromDoc(data), holdNotes: parseHoldNotesFromDoc(data) });
+    }
+    revalidatePath('/new-reservation', 'page');
+    revalidatePath('/admin/bookings', 'page');
+    return calendarWarning ? { success: true, calendarWarning, days } : { success: true, days };
+}
+
+async function refreshHoldDescriptions(dates: string[]): Promise<string | null> {
+    if (!db) return null;
+    const warnings: string[] = [];
+    for (const date of dates) {
+        const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+        const data = snap.data() as Record<string, unknown> | undefined;
+        const notes = parseHoldNotesFromDoc(data);
+        const stored = data?.doorHoldEvents;
+        for (const table of ['1', '2'] as const) {
+            const events = parseDoorMultiEvents(
+                stored && typeof stored === 'object' ? (stored as Record<string, unknown>)[table] : undefined,
+            );
+            for (const event of events) {
+                const slotNotes = [...new Set(
+                    expandHalfHoursUntil(event.start, event.end)
+                        .map((time) => notes[table][time])
+                        .filter((value): value is string => Boolean(value)),
+                )];
+                const description = [
+                    `預留時段 枱號${table} ${date} ${event.start}-${event.end}`,
+                    ...slotNotes.map((value) => holdNoteLabel(value)),
+                ].join('\n');
+                const error = await patchHoldEventDescription(table, event.eventKey, description);
+                if (error) warnings.push(error);
+            }
+        }
+    }
+    return warnings[0] ?? null;
 }
 
 async function syncReservedSlotsToHoldCalendars(

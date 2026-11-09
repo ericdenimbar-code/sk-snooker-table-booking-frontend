@@ -1,14 +1,58 @@
 import { addDays, format, parseISO } from 'date-fns';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
+import { halfHourEndHm } from '@/lib/door-multi-controls';
 
 export const HKT = 'Asia/Hong_Kong';
 export const BLOCKED_SLOTS_COLLECTION = 'blockedSlots';
 
 export type HoldTable = '1' | '2';
 export type HoldsByTable = Record<HoldTable, string[]>;
+export type HoldNotesByTable = Record<HoldTable, Record<string, string>>;
 
 export function emptyHolds(): HoldsByTable {
   return { '1': [], '2': [] };
+}
+
+export function emptyHoldNotes(): HoldNotesByTable {
+  return { '1': {}, '2': {} };
+}
+
+function noteMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object') return {};
+  const notes: Record<string, string> = {};
+  for (const [time, note] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof note === 'string' && note.trim()) notes[time] = note.trim();
+  }
+  return notes;
+}
+
+export function parseHoldNotesFromDoc(data: Record<string, unknown> | undefined): HoldNotesByTable {
+  const raw = data?.holdNotes;
+  if (!raw || typeof raw !== 'object') return emptyHoldNotes();
+  const record = raw as Record<string, unknown>;
+  return { '1': noteMap(record['1']), '2': noteMap(record['2']) };
+}
+
+export function holdNoteLabel(note: string): string {
+  const text = note.trim();
+  return text ? `（預留： ${text}）` : '預留時段';
+}
+
+/** 連續半小時、而且備注相同，才合成一段。 */
+export function mergeHoldSlotsWithNotes(
+  slots: Iterable<string>,
+  notes: Record<string, string>,
+): { start: string; end: string; note: string }[] {
+  const sorted = [...new Set(slots)].sort();
+  const ranges: { start: string; end: string; note: string }[] = [];
+  for (const slot of sorted) {
+    const note = notes[slot]?.trim() ?? '';
+    const end = halfHourEndHm(slot);
+    const last = ranges[ranges.length - 1];
+    if (last && last.end === slot && last.note === note) last.end = end;
+    else ranges.push({ start: slot, end, note });
+  }
+  return ranges;
 }
 
 function slotList(value: unknown): string[] {

@@ -536,6 +536,32 @@ export function holdCalendarId(table: '1' | '2'): string | undefined {
   return table === '1' ? CALENDAR_ID_DOOR_CONTROL_HOLD_1 : CALENDAR_ID_DOOR_CONTROL_HOLD_2;
 }
 
+export async function patchHoldEventDescription(
+  table: '1' | '2',
+  eventKey: string,
+  description: string,
+): Promise<string | null> {
+  if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY) return 'Google Calendar 未設定服務帳號。';
+  const calendarId = holdCalendarId(table);
+  if (!calendarId) {
+    return table === '1'
+      ? '缺少 GOOGLE_CALENDAR_ID_DOOR_CONTROL_Holdtable1。'
+      : '缺少 GOOGLE_CALENDAR_ID_DOOR_CONTROL_HoldTable2。';
+  }
+  try {
+    await calendar.events.patch({
+      calendarId,
+      eventId: getGoogleCalendarEventId(eventKey),
+      requestBody: { description },
+    });
+    return null;
+  } catch (error: unknown) {
+    const err = error as { code?: number; message?: string };
+    if (err.code === 404 || err.code === 410) return null;
+    return err.message ?? '無法更新預留日曆備注。';
+  }
+}
+
 /**
  * 寫入指定的預留／門禁日曆。標題由呼叫端傳入。
  */
