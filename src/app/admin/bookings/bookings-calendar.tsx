@@ -586,7 +586,7 @@ const EventButton = ({ event, currentDay, onClick, className }: { event: Combine
     return (
         <button
             onClick={() => onClick(event)}
-            className={cn("absolute w-full text-left p-1 rounded-lg text-white text-xs leading-tight transition-colors z-10", className)}
+            className={cn("absolute w-full text-left p-1 rounded-lg text-white text-xs leading-tight transition-colors z-20", className)}
             style={span}
         >
             <p className="font-bold truncate">{titleText}</p>

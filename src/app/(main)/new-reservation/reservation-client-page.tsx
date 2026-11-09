@@ -208,6 +208,18 @@ export function ReservationClientPage({
     });
   }, []);
 
+  const bookedTablesAt = useCallback((dateStr: string, time: string): Set<HoldTable> => {
+    const tables = new Set<HoldTable>();
+    for (const reservation of allReservations) {
+      if (reservation.status === 'Cancelled') continue;
+      if (reservation.roomId !== '1' && reservation.roomId !== '2') continue;
+      const covers = expandBookingToHalfHourKeys(reservation.date, reservation.startTime, reservation.endTime)
+        .some((slot) => slot.date === dateStr && slot.time === time);
+      if (covers) tables.add(reservation.roomId);
+    }
+    return tables;
+  }, [allReservations]);
+
   const effectiveHoldTables = useCallback((dateStr: string, time: string): Set<HoldTable> => {
     const tables = new Set<HoldTable>();
     if (holdSets['1'].has(time)) tables.add('1');
@@ -375,29 +387,40 @@ export function ReservationClientPage({
     });
   }, [selectedSlots]);
   
-  const stageHoldAdd = (dateStr: string, time: string, table: HoldTable) => {
-    if (isHalfHourSlotPastHkt(dateStr, time)) return false;
-    if (effectiveHoldTables(dateStr, time).has(table)) return false;
+  const stageHoldAdd = (dateStr: string, time: string, table: HoldTable): 'ok' | 'past' | 'held' | 'booked' => {
+    if (isHalfHourSlotPastHkt(dateStr, time)) return 'past';
+    if (bookedTablesAt(dateStr, time).has(table)) return 'booked';
+    if (effectiveHoldTables(dateStr, time).has(table)) return 'held';
     const pendingRemove = pendingHoldRemoves.get(dateStr)?.get(time)?.has(table) ?? false;
     if (pendingRemove) {
       stageHoldChange(setPendingHoldRemoves, dateStr, time, table, false);
     } else {
       stageHoldChange(setPendingHoldAdds, dateStr, time, table, true);
     }
-    return true;
+    return 'ok';
   };
 
   const stageSlotsForBlock = (table: HoldTable) => {
     if (sortedSlots.length === 0) return;
 
     let staged = 0;
+    let booked = 0;
     for (const slot of sortedSlots) {
-      if (stageHoldAdd(dateToHktYmd(slot.date), slot.time, table)) staged++;
+      const result = stageHoldAdd(dateToHktYmd(slot.date), slot.time, table);
+      if (result === 'ok') staged++;
+      else if (result === 'booked') booked++;
     }
 
     if (staged === 0) {
-      toast({ variant: 'destructive', title: '無法預留', description: '所選時段不可用或該枱已預留。' });
+      toast({
+        variant: 'destructive',
+        title: '無法預留',
+        description: booked > 0 ? `${table}號枱在所選時段已有付費預訂，不能再預留。` : '所選時段不可用或該枱已預留。',
+      });
       return;
+    }
+    if (booked > 0) {
+      toast({ variant: 'destructive', title: '部分時段未能預留', description: `${table}號枱已有付費預訂的半小時沒有加入預留。` });
     }
 
     setSelectedSlots([]);
@@ -1025,16 +1048,29 @@ export function ReservationClientPage({
             )}
             {holdDialog && holdDialog !== 'create' && selectedDate && effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).size === 1 && (
               <>
-                <Button onClick={() => {
-                  setSelectedSlots([{ date: selectedDate, time: holdDialog }]);
-                  setHoldDialog(null);
-                }}>
-                  預約付費
-                </Button>
+                {!bookedTablesAt(
+                  dateToHktYmd(selectedDate),
+                  holdDialog,
+                ).has(effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).has('1') ? '2' : '1') && (
+                  <Button onClick={() => {
+                    setSelectedSlots([{ date: selectedDate, time: holdDialog }]);
+                    setHoldDialog(null);
+                  }}>
+                    預約付費
+                  </Button>
+                )}
                 {effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).has('1') ? (
-                  <Button className="bg-sky-200 text-gray-900 hover:bg-sky-300" onClick={() => { stageHoldAdd(dateToHktYmd(selectedDate), holdDialog, '2'); setHoldDialog(null); }}>枱號2</Button>
+                  bookedTablesAt(dateToHktYmd(selectedDate), holdDialog).has('2') ? (
+                    <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">2號枱已有付費預訂，不能再預留。</p>
+                  ) : (
+                    <Button className="bg-sky-200 text-gray-900 hover:bg-sky-300" onClick={() => { if (stageHoldAdd(dateToHktYmd(selectedDate), holdDialog, '2') === 'ok') setHoldDialog(null); }}>枱號2</Button>
+                  )
                 ) : (
-                  <Button className="bg-yellow-400 text-gray-900 hover:bg-yellow-500" onClick={() => { stageHoldAdd(dateToHktYmd(selectedDate), holdDialog, '1'); setHoldDialog(null); }}>枱號1</Button>
+                  bookedTablesAt(dateToHktYmd(selectedDate), holdDialog).has('1') ? (
+                    <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">1號枱已有付費預訂，不能再預留。</p>
+                  ) : (
+                    <Button className="bg-yellow-400 text-gray-900 hover:bg-yellow-500" onClick={() => { if (stageHoldAdd(dateToHktYmd(selectedDate), holdDialog, '1') === 'ok') setHoldDialog(null); }}>枱號1</Button>
+                  )
                 )}
                 <Button variant="outline" onClick={() => stageHoldRemoval(holdDialog, effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).has('1') ? '1' : '2')}>取消預留</Button>
               </>

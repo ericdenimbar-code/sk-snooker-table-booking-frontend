@@ -94,6 +94,25 @@ async function assertBookingNotBlocked(
     return null;
 }
 
+async function reservationBlockingHold(date: string, toAdd: HoldSlotChange[]): Promise<string | null> {
+    if (!db || toAdd.length === 0) return null;
+    const previousDate = format(subDays(parseISO(date), 1), 'yyyy-MM-dd');
+    const snap = await db.collection('reservations').where('date', 'in', [previousDate, date]).get();
+    for (const item of toAdd) {
+        const hit = snap.docs.find((docSnap) => {
+            const reservation = docSnap.data() as Reservation;
+            if (reservation.status === 'Cancelled' || reservation.roomId !== item.table) return false;
+            return expandBookingToHalfHourKeys(reservation.date, reservation.startTime, reservation.endTime)
+                .some((slot) => slot.date === date && slot.time === item.time);
+        });
+        if (hit) {
+            const reservation = hit.data() as Reservation;
+            return `${item.table}號枱在 ${item.time} 已有付費預訂 (#${reservation.id || hit.id})，不能再預留`;
+        }
+    }
+    return null;
+}
+
 type HoldSlotChange = { time: string; table: HoldTable };
 
 export async function applyBlockedSlotChanges(
@@ -183,6 +202,11 @@ export async function applyBlockedSlotChanges(
                 storedEvents: storedForDate,
             });
         }
+    }
+
+    for (const [date, { toAdd }] of mergedByDate) {
+        const holdConflict = await reservationBlockingHold(date, toAdd);
+        if (holdConflict) return { success: false, error: holdConflict };
     }
 
     if (!hasWrites) {
