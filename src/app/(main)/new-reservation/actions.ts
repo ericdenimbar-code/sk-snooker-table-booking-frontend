@@ -356,9 +356,6 @@ function overlappingHoldMessage(
 ): string | null {
     const own = new Set(ownSlots.map((slot) => slotKey(slot.date, slot.time)));
     const nextKeys = new Set(nextSlots.map((slot) => slotKey(slot.date, slot.time)));
-    const orderedNext = [...nextSlots].sort((a, b) => slotKey(a.date, a.time).localeCompare(slotKey(b.date, b.time)));
-    const nextStart = orderedNext[0];
-    const nextEnd = nextHoldBoundary(orderedNext[orderedNext.length - 1].date, orderedNext[orderedNext.length - 1].time);
     const others = new Map<string, { date: string; time: string }[]>();
     for (const [date, data] of docs) {
         const holds = parseHoldsFromDoc(data);
@@ -376,11 +373,9 @@ function overlappingHoldMessage(
         const first = ordered[0];
         const end = nextHoldBoundary(ordered[ordered.length - 1].date, ordered[ordered.length - 1].time);
         const overlaps = ordered.some((slot) => nextKeys.has(slotKey(slot.date, slot.time)));
-        const touches = slotKey(nextEnd.date, nextEnd.time) === slotKey(first.date, first.time)
-            || slotKey(nextStart.date, nextStart.time) === slotKey(end.date, end.time);
-        if (!overlaps && !touches) continue;
+        if (!overlaps) continue;
         const label = password === 'other' ? '' : `（PW: ${password}）`;
-        return `警告：${table}號枱 ${first.time} - ${end.time} 已有另一段預留${label}，不能覆蓋或連接成同一時段。`;
+        return `警告：${table}號枱 ${first.time} - ${end.time} 已有另一段預留${label}，不能覆蓋該時段。`;
     }
     return null;
 }

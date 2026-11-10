@@ -284,23 +284,11 @@ export function ReservationClientPage({
     if (!selectedDate || !isMounted) return;
 
     const dateStr = dateToHktYmd(selectedDate);
-    const heldTables = effectiveHoldTables(dateStr, time);
-
     const slotAvailability = availability.get(time) || 0;
     const expired = isHalfHourSlotPastHkt(dateStr, time);
     const unavailable = expired || slotAvailability >= 2 || slotIsUnavailable(dateStr, time);
 
-    // 已預留但仍有一張枱可訂時，選時段仍先做付費預約。
-    // 只有在尚未挑選結束時段時，才打開預留選單，並把預約付費放在第一個。
-    if (isAdmin && !expired && heldTables.size > 0 && selectedSlots.length !== 1) {
-      setHoldDialog(time);
-      return;
-    }
-
-    if (unavailable) {
-      if (isAdmin && !expired && heldTables.size > 0) setHoldDialog(time);
-      return;
-    }
+    if (unavailable) return;
 
     const newSlot = { date: selectedDate, time };
 
@@ -424,17 +412,6 @@ export function ReservationClientPage({
     }
 
     setSelectedSlots([]);
-    setHoldDialog(null);
-  };
-
-  const stageHoldRemoval = (time: string, table: HoldTable) => {
-    if (!selectedDate) return;
-    const dateStr = dateToHktYmd(selectedDate);
-    if (!effectiveHoldTables(dateStr, time).has(table)) return;
-    const pendingAdd = pendingHoldAdds.get(dateStr)?.get(time)?.has(table) ?? false;
-    const inDb = holdSets[table].has(time);
-    if (pendingAdd) stageHoldChange(setPendingHoldAdds, dateStr, time, table, false);
-    if (inDb) stageHoldChange(setPendingHoldRemoves, dateStr, time, table, true);
     setHoldDialog(null);
   };
 
@@ -1031,50 +1008,11 @@ export function ReservationClientPage({
       <Dialog open={holdDialog !== null} onOpenChange={(open) => { if (!open) setHoldDialog(null); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>{holdDialog === 'create' ? '選擇預留枱號' : '調整預留'}</DialogTitle>
+            <DialogTitle>選擇預留枱號</DialogTitle>
           </DialogHeader>
           <div className="grid gap-2">
-            {holdDialog === 'create' && (
-              <>
-                <Button className="bg-yellow-400 text-gray-900 hover:bg-yellow-500" onClick={() => stageSlotsForBlock('1')}>枱號1</Button>
-                <Button className="bg-sky-200 text-gray-900 hover:bg-sky-300" onClick={() => stageSlotsForBlock('2')}>枱號2</Button>
-              </>
-            )}
-            {holdDialog && holdDialog !== 'create' && selectedDate && effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).size === 2 && (
-              <>
-                <Button variant="outline" onClick={() => stageHoldRemoval(holdDialog, '1')}>取消枱號1預留</Button>
-                <Button variant="outline" onClick={() => stageHoldRemoval(holdDialog, '2')}>取消枱號2預留</Button>
-              </>
-            )}
-            {holdDialog && holdDialog !== 'create' && selectedDate && effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).size === 1 && (
-              <>
-                {!bookedTablesAt(
-                  dateToHktYmd(selectedDate),
-                  holdDialog,
-                ).has(effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).has('1') ? '2' : '1') && (
-                  <Button onClick={() => {
-                    setSelectedSlots([{ date: selectedDate, time: holdDialog }]);
-                    setHoldDialog(null);
-                  }}>
-                    預約付費
-                  </Button>
-                )}
-                {effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).has('1') ? (
-                  bookedTablesAt(dateToHktYmd(selectedDate), holdDialog).has('2') ? (
-                    <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">2號枱已有付費預訂，不能再預留。</p>
-                  ) : (
-                    <Button className="bg-sky-200 text-gray-900 hover:bg-sky-300" onClick={() => { if (stageHoldAdd(dateToHktYmd(selectedDate), holdDialog, '2') === 'ok') setHoldDialog(null); }}>枱號2</Button>
-                  )
-                ) : (
-                  bookedTablesAt(dateToHktYmd(selectedDate), holdDialog).has('1') ? (
-                    <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">1號枱已有付費預訂，不能再預留。</p>
-                  ) : (
-                    <Button className="bg-yellow-400 text-gray-900 hover:bg-yellow-500" onClick={() => { if (stageHoldAdd(dateToHktYmd(selectedDate), holdDialog, '1') === 'ok') setHoldDialog(null); }}>枱號1</Button>
-                  )
-                )}
-                <Button variant="outline" onClick={() => stageHoldRemoval(holdDialog, effectiveHoldTables(dateToHktYmd(selectedDate), holdDialog).has('1') ? '1' : '2')}>取消預留</Button>
-              </>
-            )}
+            <Button className="bg-yellow-400 text-gray-900 hover:bg-yellow-500" onClick={() => stageSlotsForBlock('1')}>枱號1</Button>
+            <Button className="bg-sky-200 text-gray-900 hover:bg-sky-300" onClick={() => stageSlotsForBlock('2')}>枱號2</Button>
           </div>
         </DialogContent>
       </Dialog>
