@@ -8,12 +8,22 @@ export const BLOCKED_SLOTS_COLLECTION = 'blockedSlots';
 export type HoldTable = '1' | '2';
 export type HoldsByTable = Record<HoldTable, string[]>;
 export type HoldNotesByTable = Record<HoldTable, Record<string, string>>;
+export type HoldPasswordsByTable = Record<HoldTable, Record<string, string>>;
+export type HoldExactEndsByTable = Record<HoldTable, Record<string, string>>;
 
 export function emptyHolds(): HoldsByTable {
   return { '1': [], '2': [] };
 }
 
 export function emptyHoldNotes(): HoldNotesByTable {
+  return { '1': {}, '2': {} };
+}
+
+export function emptyHoldPasswords(): HoldPasswordsByTable {
+  return { '1': {}, '2': {} };
+}
+
+export function emptyHoldExactEnds(): HoldExactEndsByTable {
   return { '1': {}, '2': {} };
 }
 
@@ -31,6 +41,38 @@ export function parseHoldNotesFromDoc(data: Record<string, unknown> | undefined)
   if (!raw || typeof raw !== 'object') return emptyHoldNotes();
   const record = raw as Record<string, unknown>;
   return { '1': noteMap(record['1']), '2': noteMap(record['2']) };
+}
+
+function passwordMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object') return {};
+  const passwords: Record<string, string> = {};
+  for (const [time, password] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof password === 'string' && /^\d{4}$/.test(password)) passwords[time] = password;
+  }
+  return passwords;
+}
+
+export function parseHoldPasswordsFromDoc(data: Record<string, unknown> | undefined): HoldPasswordsByTable {
+  const raw = data?.holdPasswords;
+  if (!raw || typeof raw !== 'object') return emptyHoldPasswords();
+  const record = raw as Record<string, unknown>;
+  return { '1': passwordMap(record['1']), '2': passwordMap(record['2']) };
+}
+
+function exactEndMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object') return {};
+  const ends: Record<string, string> = {};
+  for (const [time, end] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof end === 'string' && /^\d{2}:\d{2}$/.test(end)) ends[time] = end;
+  }
+  return ends;
+}
+
+export function parseHoldExactEndsFromDoc(data: Record<string, unknown> | undefined): HoldExactEndsByTable {
+  const raw = data?.holdExactEnds;
+  if (!raw || typeof raw !== 'object') return emptyHoldExactEnds();
+  const record = raw as Record<string, unknown>;
+  return { '1': exactEndMap(record['1']), '2': exactEndMap(record['2']) };
 }
 
 export function holdNoteLabel(note: string): string {
@@ -53,6 +95,46 @@ export function mergeHoldSlotsWithNotes(
     else ranges.push({ start: slot, end, note });
   }
   return ranges;
+}
+
+export type HoldBlockRange = {
+  start: string;
+  /** 顯示用結束時間。提早結束時是當下分鐘，例如 19:37。 */
+  end: string;
+  /** 仍佔用的半小時格結束時間，例如 20:00。 */
+  slotEnd: string;
+  note: string;
+  password: string;
+};
+
+/** 連續、備注相同、密碼相同的半小時合成一段。最後一格若有提早結束時間，改用該時間。 */
+export function mergeHoldBlocks(
+  slots: Iterable<string>,
+  notes: Record<string, string>,
+  passwords: Record<string, string>,
+  exactEnds: Record<string, string>,
+): HoldBlockRange[] {
+  const sorted = [...new Set(slots)].sort();
+  const ranges: { start: string; end: string; note: string; password: string; lastSlot: string }[] = [];
+  for (const slot of sorted) {
+    const note = notes[slot]?.trim() ?? '';
+    const password = passwords[slot] ?? '';
+    const end = halfHourEndHm(slot);
+    const last = ranges[ranges.length - 1];
+    if (last && last.end === slot && last.note === note && last.password === password) {
+      last.end = end;
+      last.lastSlot = slot;
+    } else {
+      ranges.push({ start: slot, end, note, password, lastSlot: slot });
+    }
+  }
+  return ranges.map((range) => ({
+    start: range.start,
+    end: exactEnds[range.lastSlot] || range.end,
+    slotEnd: range.end,
+    note: range.note,
+    password: range.password,
+  }));
 }
 
 function slotList(value: unknown): string[] {

@@ -1,12 +1,7 @@
 'use server';
 
 import { db } from '@/lib/firebase-admin';
-import {
-  isFacilityShutdownWindowOpen,
-  triggerFacilityShutdown,
-  verifyFacilityShutdownPasscode,
-  type FacilityShutdownPublicStatus,
-} from '@/lib/facility-shutdown';
+import { closeHoldByPasscode } from '@/app/(main)/new-reservation/actions';
 
 export async function getPublicSiteName(): Promise<string> {
   const fallback = 'Snooker Kingdom Booking';
@@ -21,32 +16,29 @@ export async function getPublicSiteName(): Promise<string> {
   return fallback;
 }
 
-/** 只回傳現在是否在生效時段內。 */
-export async function getClosedoorAvailability(): Promise<{ open: boolean }> {
-  try {
-    return { open: await isFacilityShutdownWindowOpen() };
-  } catch (error: unknown) {
-    console.error('[closedoor] availability', error);
-    return { open: false };
-  }
-}
-
 export async function submitClosedoorPasscode(passcode: string): Promise<
-  { status: 'ok'; ticket: string } | { status: 'closed' | 'invalid' }
+  | { status: 'ok'; message: string }
+  | { status: 'invalid' | 'locked' | 'not-started' | 'ended' | 'failed'; message: string }
 > {
   try {
-    return await verifyFacilityShutdownPasscode(passcode);
+    const result = await closeHoldByPasscode(passcode);
+    if (result.status === 'ok') {
+      const released = result.releasedFrom && result.releasedUntil
+        ? `${result.releasedFrom} - ${result.releasedUntil} 已可再預約。`
+        : '餘下時間已可再預約。';
+      const warning = result.calendarWarning ? ` ${result.calendarWarning}` : '';
+      return {
+        status: 'ok',
+        message: `枱號${result.table} 預留已於 ${result.closedAt} 結束。${released}${warning}`,
+      };
+    }
+    if (result.status === 'locked') return { status: 'locked', message: '嘗試次數過多，請 15 分鐘後再試。' };
+    if (result.status === 'not-started') return { status: 'not-started', message: '此時段尚未開始。' };
+    if (result.status === 'ended') return { status: 'ended', message: '此時段已結束。' };
+    if (result.status === 'failed') return { status: 'failed', message: result.error || '暫時無法結束預留，請稍後再試。' };
+    return { status: 'invalid', message: '密碼不正確。' };
   } catch (error: unknown) {
-    console.error('[closedoor] verify', error);
-    return { status: 'invalid' };
-  }
-}
-
-export async function confirmClosedoorShutdown(ticket: string): Promise<{ status: FacilityShutdownPublicStatus }> {
-  try {
-    return { status: await triggerFacilityShutdown(ticket) };
-  } catch (error: unknown) {
-    console.error('[closedoor] trigger', error);
-    return { status: 'failed' };
+    console.error('[closedoor] close hold', error);
+    return { status: 'failed', message: '暫時無法結束預留，請稍後再試。' };
   }
 }

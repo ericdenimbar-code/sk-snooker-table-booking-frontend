@@ -536,6 +536,36 @@ export function holdCalendarId(table: '1' | '2'): string | undefined {
   return table === '1' ? CALENDAR_ID_DOOR_CONTROL_HOLD_1 : CALENDAR_ID_DOOR_CONTROL_HOLD_2;
 }
 
+export async function patchHoldEventEnd(
+  table: '1' | '2',
+  eventKey: string,
+  startIso: string,
+  endIso: string,
+): Promise<string | null> {
+  if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY) return 'Google Calendar 未設定服務帳號。';
+  const calendarId = holdCalendarId(table);
+  if (!calendarId) {
+    return table === '1'
+      ? '缺少 GOOGLE_CALENDAR_ID_DOOR_CONTROL_Holdtable1。'
+      : '缺少 GOOGLE_CALENDAR_ID_DOOR_CONTROL_HoldTable2。';
+  }
+  try {
+    await calendar.events.patch({
+      calendarId,
+      eventId: getGoogleCalendarEventId(eventKey),
+      requestBody: {
+        start: { dateTime: startIso, timeZone: HKT_TIMEZONE },
+        end: { dateTime: endIso, timeZone: HKT_TIMEZONE },
+      },
+    });
+    return null;
+  } catch (error: unknown) {
+    const err = error as { code?: number; message?: string };
+    if (err.code === 404 || err.code === 410) return '找不到要縮短的預留日曆。';
+    return err.message ?? '無法更新預留日曆結束時間。';
+  }
+}
+
 export async function patchHoldEventDescription(
   table: '1' | '2',
   eventKey: string,

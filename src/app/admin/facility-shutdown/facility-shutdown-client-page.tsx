@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, RefreshCw } from 'lucide-react';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
@@ -218,10 +219,16 @@ export function FacilityShutdownClientPage() {
 
   return (
     <>
+      <Alert>
+        <AlertTitle>離場密碼已改由每段預留產生</AlertTitle>
+        <AlertDescription>
+          /closedoor 現在一直顯示 4 位密碼欄。每段預留成功後會產生自己的密碼，顯示在預訂管理該段的 PW。時段開始後輸入該密碼，會把該枱預留截到當下，餘下時間恢復可預約。此頁的舊時段密碼不會再啟動 /closedoor。
+        </AlertDescription>
+      </Alert>
       <Card>
         <CardHeader>
           <CardTitle>4 位數字密碼</CardTitle>
-          <CardDescription>選擇生效時段後按確定，密碼會一併寫入。結束時間早於開始時間會視為跨日至次日。</CardDescription>
+          <CardDescription>以下是舊的全場時段設定，不再控制 /closedoor。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="space-y-3 text-center">

@@ -29,7 +29,7 @@ import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions
 import { cn } from '@/lib/utils';
 import { db, auth } from '@/lib/firebase';
 import { getAdminSlotPeriodHkt, getHktBookingStartUtc } from '@/lib/hkt-temp-segment';
-import { BLOCKED_SLOTS_COLLECTION, emptyHoldNotes, emptyHolds, holdNoteLabel, mergeHoldSlotsWithNotes, parseHoldNotesFromDoc, parseHoldsFromDoc, type HoldNotesByTable, type HoldsByTable } from '@/lib/blocked-slots';
+import { BLOCKED_SLOTS_COLLECTION, emptyHoldExactEnds, emptyHoldNotes, emptyHoldPasswords, emptyHolds, holdNoteLabel, mergeHoldBlocks, parseHoldExactEndsFromDoc, parseHoldNotesFromDoc, parseHoldPasswordsFromDoc, parseHoldsFromDoc, type HoldExactEndsByTable, type HoldNotesByTable, type HoldPasswordsByTable, type HoldsByTable } from '@/lib/blocked-slots';
 import { useAdminFirestoreSession } from '@/lib/use-admin-firestore-session';
 import {
   getAdminDayWindow,
@@ -55,7 +55,9 @@ type HoldVisual = {
   date: string;
   startTime: string;
   endTime: string;
+  slotEnd: string;
   note: string;
+  password: string;
   start: Date;
   end: Date;
   isOvernight: boolean;
@@ -66,6 +68,8 @@ type BookingsCalendarProps = {
   initialTempAccess: TemporaryAccess[];
   initialHolds?: HoldsByTable;
   initialHoldNotes?: HoldNotesByTable;
+  initialHoldPasswords?: HoldPasswordsByTable;
+  initialHoldExactEnds?: HoldExactEndsByTable;
   initialHoldsDate?: string;
 };
 
@@ -84,7 +88,7 @@ function getHktAnchorDate(): Date {
   return new Date(y, mo - 1, d);
 }
 
-export function BookingsCalendar({ initialReservations, initialTempAccess, initialHolds = emptyHolds(), initialHoldNotes = emptyHoldNotes(), initialHoldsDate }: BookingsCalendarProps) {
+export function BookingsCalendar({ initialReservations, initialTempAccess, initialHolds = emptyHolds(), initialHoldNotes = emptyHoldNotes(), initialHoldPasswords = emptyHoldPasswords(), initialHoldExactEnds = emptyHoldExactEnds(), initialHoldsDate }: BookingsCalendarProps) {
   const { toast } = useToast();
   const firestoreSession = useAdminFirestoreSession();
   const permissionDeniedToastShownRef = useRef(false);
@@ -93,6 +97,8 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
   const [tempAccesses, setTempAccesses] = useState<TemporaryAccess[]>(initialTempAccess);
   const [holds, setHolds] = useState<HoldsByTable>(initialHolds);
   const [holdNotes, setHoldNotes] = useState<HoldNotesByTable>(initialHoldNotes);
+  const [holdPasswords, setHoldPasswords] = useState<HoldPasswordsByTable>(initialHoldPasswords);
+  const [holdExactEnds, setHoldExactEnds] = useState<HoldExactEndsByTable>(initialHoldExactEnds);
   const [holdsDate, setHoldsDate] = useState(initialHoldsDate ?? '');
   const [selectedHold, setSelectedHold] = useState<HoldVisual | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<CombinedEvent | null>(null);
@@ -156,19 +162,23 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
   const holdVisuals = useMemo(() => {
     const source = holdsDate === dayYmd ? holds : emptyHolds();
     const notes = holdsDate === dayYmd ? holdNotes : emptyHoldNotes();
+    const passwords = holdsDate === dayYmd ? holdPasswords : emptyHoldPasswords();
+    const exactEnds = holdsDate === dayYmd ? holdExactEnds : emptyHoldExactEnds();
     return (['1', '2'] as const).flatMap((roomId) =>
-      mergeHoldSlotsWithNotes(source[roomId], notes[roomId]).flatMap((range) => {
+      mergeHoldBlocks(source[roomId], notes[roomId], passwords[roomId], exactEnds[roomId]).flatMap((range) => {
         try {
           const start = getHktBookingStartUtc(dayYmd, range.start);
           const end = getAdminSlotPeriodHkt(dayYmd, range.start, range.end).validUntil;
           if (!isValid(start) || !isValid(end)) return [];
           return [{
-            id: `hold-${roomId}-${dayYmd}-${range.start}-${range.end}`,
+            id: `hold-${roomId}-${dayYmd}-${range.start}-${range.end}-${range.password}`,
             roomId,
             date: dayYmd,
             startTime: range.start,
             endTime: range.end,
+            slotEnd: range.slotEnd,
             note: range.note,
+            password: range.password,
             start,
             end,
             isOvernight: !isSameHktDay(start, end),
@@ -178,7 +188,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
         }
       }),
     );
-  }, [dayYmd, holds, holdNotes, holdsDate]);
+  }, [dayYmd, holds, holdNotes, holdPasswords, holdExactEnds, holdsDate]);
 
   const getEventsForDay = useCallback((day: Date, filter: 'room1' | 'room2' | 'door') => {
     
@@ -207,6 +217,8 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
       if (cancelled || !result.success || !result.holds) return;
       setHolds(result.holds);
       setHoldNotes(result.holdNotes ?? emptyHoldNotes());
+      setHoldPasswords(result.holdPasswords ?? emptyHoldPasswords());
+      setHoldExactEnds(result.holdExactEnds ?? emptyHoldExactEnds());
       setHoldsDate(dayYmd);
     });
     const unsubscribe = onSnapshot(
@@ -216,6 +228,8 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
         const data = snap.exists() ? snap.data() as Record<string, unknown> : undefined;
         setHolds(parseHoldsFromDoc(data));
         setHoldNotes(parseHoldNotesFromDoc(data));
+        setHoldPasswords(parseHoldPasswordsFromDoc(data));
+        setHoldExactEnds(parseHoldExactEndsFromDoc(data));
         setHoldsDate(dayYmd);
       },
       (error) => {
@@ -596,7 +610,7 @@ const HoldBlock = ({ block, onClick }: { block: HoldVisual; onClick: (block: Hol
       style={span}
     >
       <p className="font-bold truncate">{holdNoteLabel(block.note)}</p>
-      <p className="truncate">{startLabel} - {endLabel}</p>
+      <p className="truncate">{startLabel} - {endLabel}{block.password ? `  PW: ${block.password}` : ''}</p>
     </button>
   );
 };
@@ -619,14 +633,20 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
     if (!open || !block) return;
     setRoomId(block.roomId);
     setStartTime(block.startTime);
-    setEndTime(block.endTime);
+    setEndTime(block.slotEnd);
     setNote(block.note);
     setErrorMessage('');
   }, [open, block?.id]);
 
   if (!block) return null;
 
+  const locked = block.end.getTime() <= Date.now();
+
   const save = async (nextRoomId: '1' | '2', nextStart: string, nextEnd: string, nextNote: string) => {
+    if (locked) {
+      setErrorMessage('此時段已結束，不能再修改。');
+      return;
+    }
     setIsSaving(true);
     setErrorMessage('');
     try {
@@ -641,7 +661,7 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
         date: block.date,
         fromTable: block.roomId,
         fromStart: block.startTime,
-        fromEnd: block.endTime,
+        fromEnd: block.slotEnd,
         toTable: nextRoomId,
         toStart: nextStart,
         toEnd: nextEnd,
@@ -677,6 +697,13 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
           <DialogDescription>
             {block.date}　預留時段。結束時間早於開始時間代表跨至翌日。修改會立即更新前台與 Google Calendar，不會發送電郵。
           </DialogDescription>
+          {block.password && <p className="text-lg font-bold tabular-nums">PW: {block.password}</p>}
+          {block.endTime !== block.slotEnd && (
+            <p className="text-sm text-muted-foreground">此段已提早結束於 {block.endTime}。</p>
+          )}
+          {locked && (
+            <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">警告：此時段已結束，不能再修改。</p>
+          )}
         </DialogHeader>
         <form
           className="grid gap-3"
@@ -695,21 +722,21 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
           )}
           <label className="grid gap-1 text-sm">
             枱號
-            <select name="roomId" className="h-10 rounded-md border bg-background px-3" value={roomId} onChange={(e) => setRoomId(e.target.value as '1' | '2')}>
+            <select name="roomId" className="h-10 rounded-md border bg-background px-3" value={roomId} onChange={(e) => setRoomId(e.target.value as '1' | '2')} disabled={locked}>
               <option value="1">枱號 1</option>
               <option value="2">枱號 2</option>
             </select>
           </label>
           <label className="grid gap-1 text-sm">
             開始時間
-            <select name="startTime" className="h-10 rounded-md border bg-background px-3" value={startTime} onChange={(e) => setStartTime(e.target.value)}>
+            <select name="startTime" className="h-10 rounded-md border bg-background px-3" value={startTime} onChange={(e) => setStartTime(e.target.value)} disabled={locked}>
               {HALF_HOUR_OPTIONS.map((time) => <option key={`hold-start-${time}`} value={time}>{time}</option>)}
             </select>
           </label>
           <label className="grid gap-1 text-sm">
             結束時間
-            <select name="endTime" className="h-10 rounded-md border bg-background px-3" value={endTime} onChange={(e) => setEndTime(e.target.value)}>
-              {HALF_HOUR_OPTIONS.map((time) => <option key={`hold-end-${time}`} value={time}>{time}</option>)}
+            <select name="endTime" className="h-10 rounded-md border bg-background px-3" value={endTime} onChange={(e) => setEndTime(e.target.value)} disabled={locked}>
+              {(HALF_HOUR_OPTIONS.includes(endTime) ? HALF_HOUR_OPTIONS : [endTime, ...HALF_HOUR_OPTIONS]).map((time) => <option key={`hold-end-${time}`} value={time}>{time}</option>)}
             </select>
           </label>
           <label className="grid gap-1 text-sm">
@@ -720,12 +747,13 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
               onChange={(e) => setNote(e.target.value)}
               className="h-28 resize-none text-sm font-semibold"
               aria-label="備注"
+              disabled={locked}
             />
             {note.trim() && <p className="text-sm font-semibold">顯示為 {holdNoteLabel(note)}</p>}
           </label>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>返回</Button>
-            <Button type="submit" disabled={isSaving}>
+            <Button type="submit" disabled={isSaving || locked}>
               {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               確定修改
             </Button>

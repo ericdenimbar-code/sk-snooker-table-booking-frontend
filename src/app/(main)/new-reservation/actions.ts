@@ -4,17 +4,19 @@
 import { db } from '@/lib/firebase-admin';
 import type { Reservation, TemporaryAccess } from '@/types';
 import { revalidatePath } from 'next/cache';
-import { applyDoorMultiControlCalendar, createGoogleCalendarEvent, holdCalendarId, patchHoldEventDescription } from '@/lib/google-calendar';
+import { applyDoorMultiControlCalendar, createGoogleCalendarEvent, holdCalendarId, patchHoldEventDescription, patchHoldEventEnd } from '@/lib/google-calendar';
 import { getAdminSlotPeriodHkt } from '@/lib/hkt-temp-segment';
 import {
   DOOR_MULTI_CONTROLS,
   expandHalfHoursUntil,
+  halfHourEndHm,
   parseDoorMultiEvents,
   reconcileDoorMultiCoverage,
   type DoorMultiEventRecord,
 } from '@/lib/door-multi-controls';
 import { parseISO, add, sub, addDays, format, subDays } from 'date-fns';
-import { randomBytes } from 'crypto';
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
+import { randomBytes, randomInt } from 'crypto';
 import qrcode from 'qrcode';
 import { sendQrCodeEmail } from '@/lib/email';
 import { createTokenPurchaseRequest } from '@/app/admin/token-requests/actions';
@@ -23,15 +25,23 @@ import { unstable_cache as cache } from 'next/cache';
 import admin from 'firebase-admin';
 import {
   BLOCKED_SLOTS_COLLECTION,
+  emptyHoldExactEnds,
+  emptyHoldPasswords,
   emptyHolds,
   expandBookingToHalfHourKeys,
   generateHalfHourSlots,
   holdNoteLabel,
   isHalfHourSlotPastHkt,
+  HKT,
   isValidHalfHourSlot,
+  mergeHoldSlotsWithNotes,
+  parseHoldExactEndsFromDoc,
   parseHoldNotesFromDoc,
+  parseHoldPasswordsFromDoc,
   parseHoldsFromDoc,
+  type HoldExactEndsByTable,
   type HoldNotesByTable,
+  type HoldPasswordsByTable,
   type HoldTable,
   type HoldsByTable,
 } from '@/lib/blocked-slots';
@@ -60,15 +70,81 @@ async function getHoldsForDate(date: string): Promise<HoldsByTable> {
     return parseHoldsFromDoc(docSnap.data() as Record<string, unknown> | undefined);
 }
 
-export async function getBlockedSlotsForDate(date: string): Promise<ServerActionResponse & { holds?: HoldsByTable; holdNotes?: HoldNotesByTable; slots?: string[] }> {
+function newHoldPasscode(used: Set<string>): string {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+        const code = String(randomInt(0, 10000)).padStart(4, '0');
+        if (!used.has(code)) {
+            used.add(code);
+            return code;
+        }
+    }
+    const fallback = String(randomInt(0, 10000)).padStart(4, '0');
+    used.add(fallback);
+    return fallback;
+}
+
+function assignHoldPasswords(
+    holds: HoldsByTable,
+    _notes: HoldNotesByTable,
+    current: HoldPasswordsByTable,
+    used: Set<string>,
+): HoldPasswordsByTable {
+    const next: HoldPasswordsByTable = {
+        '1': { ...current['1'] },
+        '2': { ...current['2'] },
+    };
+    for (const table of ['1', '2'] as const) {
+        for (const time of Object.keys(next[table])) {
+            if (!holds[table].includes(time)) delete next[table][time];
+        }
+        const missing = holds[table].filter((time) => !next[table][time]).sort();
+        let run: string[] = [];
+        const flush = () => {
+            if (run.length === 0) return;
+            const password = newHoldPasscode(used);
+            for (const time of run) next[table][time] = password;
+            run = [];
+        };
+        for (const time of missing) {
+            const previous = run[run.length - 1];
+            if (previous && halfHourEndHm(previous) === time) run.push(time);
+            else {
+                flush();
+                run = [time];
+            }
+        }
+        flush();
+    }
+    return next;
+}
+
+function heldSlotsMissingPassword(holds: HoldsByTable, passwords: HoldPasswordsByTable): boolean {
+    return (['1', '2'] as const).some((table) => holds[table].some((time) => !passwords[table][time]));
+}
+
+export async function getBlockedSlotsForDate(date: string): Promise<ServerActionResponse & {
+    holds?: HoldsByTable;
+    holdNotes?: HoldNotesByTable;
+    holdPasswords?: HoldPasswordsByTable;
+    holdExactEnds?: HoldExactEndsByTable;
+    slots?: string[];
+}> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
     try {
-        const docSnap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+        const ref = db.collection(BLOCKED_SLOTS_COLLECTION).doc(date);
+        const docSnap = await ref.get();
         const data = docSnap.exists ? docSnap.data() as Record<string, unknown> : undefined;
         const holds = parseHoldsFromDoc(data);
         const holdNotes = parseHoldNotesFromDoc(data);
+        let holdPasswords = parseHoldPasswordsFromDoc(data);
+        const holdExactEnds = parseHoldExactEndsFromDoc(data);
+        if (heldSlotsMissingPassword(holds, holdPasswords)) {
+            const used = new Set<string>([...Object.values(holdPasswords['1']), ...Object.values(holdPasswords['2'])]);
+            holdPasswords = assignHoldPasswords(holds, holdNotes, holdPasswords, used);
+            await ref.set({ holdPasswords }, { merge: true });
+        }
         const slots = [...new Set([...holds['1'], ...holds['2']])];
-        return { success: true, holds, holdNotes, slots };
+        return { success: true, holds, holdNotes, holdPasswords, holdExactEnds, slots };
     } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         return { success: false, error: `讀取預留時段失敗: ${msg}` };
@@ -128,9 +204,15 @@ export async function applyBlockedSlotChanges(
     changes: { date: string; toAdd: HoldSlotChange[]; toRemove: HoldSlotChange[] }[],
 ): Promise<ServerActionResponse> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
-
     const authError = await assertAdminUser(adminUserId);
     if (authError) return { success: false, error: authError };
+    return writeBlockedSlotChanges(changes);
+}
+
+async function writeBlockedSlotChanges(
+    changes: { date: string; toAdd: HoldSlotChange[]; toRemove: HoldSlotChange[] }[],
+): Promise<ServerActionResponse> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
 
     const timeSlots = generateHalfHourSlots();
     const mergedByDate = new Map<string, { toAdd: HoldSlotChange[]; toRemove: HoldSlotChange[] }>();
@@ -180,7 +262,20 @@ export async function applyBlockedSlotChanges(
         next['2'].sort();
 
         const slots = [...new Set([...next['1'], ...next['2']])].sort();
-        batch.set(ref, { holds: next, slots }, { merge: true });
+        const notes = parseHoldNotesFromDoc(data);
+        const exactEnds = parseHoldExactEndsFromDoc(data);
+        for (const table of ['1', '2'] as const) {
+            for (const item of toRemove) {
+                if (item.table !== table) continue;
+                delete exactEnds[table][item.time];
+            }
+        }
+        const used = new Set<string>([
+            ...Object.values(parseHoldPasswordsFromDoc(data)['1']),
+            ...Object.values(parseHoldPasswordsFromDoc(data)['2']),
+        ]);
+        const holdPasswords = assignHoldPasswords(next, notes, parseHoldPasswordsFromDoc(data), used);
+        batch.set(ref, { holds: next, slots, holdPasswords, holdExactEnds: exactEnds }, { merge: true });
         hasWrites = true;
 
         const storedEvents = data?.doorHoldEvents;
@@ -233,6 +328,63 @@ export async function applyBlockedSlotChanges(
     return calendarWarning ? { success: true, calendarWarning } : { success: true };
 }
 
+function slotKey(date: string, time: string): string {
+    return `${date}|${time}`;
+}
+
+function nextHoldBoundary(date: string, time: string): { date: string; time: string } {
+    const end = halfHourEndHm(time);
+    if (end === '00:00') return { date: format(addDays(parseISO(date), 1), 'yyyy-MM-dd'), time: '00:00' };
+    return { date, time: end };
+}
+
+function holdEndedMessage(docs: Map<string, Record<string, unknown> | undefined>, slots: { date: string; time: string }[], table: HoldTable): string | null {
+    const ordered = [...slots].sort((a, b) => slotKey(a.date, a.time).localeCompare(slotKey(b.date, b.time)));
+    const last = ordered[ordered.length - 1];
+    if (!last) return null;
+    const exact = parseHoldExactEndsFromDoc(docs.get(last.date))[table][last.time];
+    const boundary = exact ? { date: last.date, time: exact } : nextHoldBoundary(last.date, last.time);
+    if (Date.now() >= hktSlotMs(boundary.date, boundary.time)) return '此時段已結束，不能再修改。';
+    return null;
+}
+
+function overlappingHoldMessage(
+    docs: Map<string, Record<string, unknown> | undefined>,
+    table: HoldTable,
+    ownSlots: { date: string; time: string }[],
+    nextSlots: { date: string; time: string }[],
+): string | null {
+    const own = new Set(ownSlots.map((slot) => slotKey(slot.date, slot.time)));
+    const nextKeys = new Set(nextSlots.map((slot) => slotKey(slot.date, slot.time)));
+    const orderedNext = [...nextSlots].sort((a, b) => slotKey(a.date, a.time).localeCompare(slotKey(b.date, b.time)));
+    const nextStart = orderedNext[0];
+    const nextEnd = nextHoldBoundary(orderedNext[orderedNext.length - 1].date, orderedNext[orderedNext.length - 1].time);
+    const others = new Map<string, { date: string; time: string }[]>();
+    for (const [date, data] of docs) {
+        const holds = parseHoldsFromDoc(data);
+        const passwords = parseHoldPasswordsFromDoc(data);
+        for (const time of holds[table]) {
+            if (own.has(slotKey(date, time))) continue;
+            const password = passwords[table][time] || 'other';
+            const list = others.get(password) ?? [];
+            list.push({ date, time });
+            others.set(password, list);
+        }
+    }
+    for (const [password, slots] of others) {
+        const ordered = slots.sort((a, b) => slotKey(a.date, a.time).localeCompare(slotKey(b.date, b.time)));
+        const first = ordered[0];
+        const end = nextHoldBoundary(ordered[ordered.length - 1].date, ordered[ordered.length - 1].time);
+        const overlaps = ordered.some((slot) => nextKeys.has(slotKey(slot.date, slot.time)));
+        const touches = slotKey(nextEnd.date, nextEnd.time) === slotKey(first.date, first.time)
+            || slotKey(nextStart.date, nextStart.time) === slotKey(end.date, end.time);
+        if (!overlaps && !touches) continue;
+        const label = password === 'other' ? '' : `（PW: ${password}）`;
+        return `警告：${table}號枱 ${first.time} - ${end.time} 已有另一段預留${label}，不能覆蓋或連接成同一時段。`;
+    }
+    return null;
+}
+
 export async function updateHoldBlock(params: {
     adminUserId: string;
     date: string;
@@ -243,7 +395,7 @@ export async function updateHoldBlock(params: {
     toStart: string;
     toEnd: string;
     note: string;
-}): Promise<ServerActionResponse & { days?: { date: string; holds: HoldsByTable; holdNotes: HoldNotesByTable }[] }> {
+}): Promise<ServerActionResponse & { days?: { date: string; holds: HoldsByTable; holdNotes: HoldNotesByTable; holdPasswords: HoldPasswordsByTable; holdExactEnds: HoldExactEndsByTable }[] }> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
     const authError = await assertAdminUser(params.adminUserId);
     if (authError) return { success: false, error: authError };
@@ -276,6 +428,33 @@ export async function updateHoldBlock(params: {
         }
     }
 
+    const ended = holdEndedMessage(docs, oldKeys, params.fromTable);
+    if (ended) return { success: false, error: ended };
+
+    const neighborDates = new Set(dates);
+    for (const date of dates) {
+        neighborDates.add(format(subDays(parseISO(date), 1), 'yyyy-MM-dd'));
+        neighborDates.add(format(addDays(parseISO(date), 1), 'yyyy-MM-dd'));
+    }
+    for (const date of neighborDates) {
+        if (docs.has(date)) continue;
+        const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+        docs.set(date, snap.exists ? snap.data() as Record<string, unknown> : undefined);
+    }
+
+    const rangeUnchanged = params.fromTable === params.toTable
+        && params.fromStart === params.toStart
+        && params.fromEnd === params.toEnd;
+    if (!rangeUnchanged) {
+        const conflict = overlappingHoldMessage(
+            docs,
+            params.toTable,
+            params.fromTable === params.toTable ? oldKeys : [],
+            newKeys,
+        );
+        if (conflict) return { success: false, error: conflict };
+    }
+
     const kept = new Set(
         params.fromTable === params.toTable
             ? oldKeys.filter((slot) => newKeys.some((next) => next.date === slot.date && next.time === slot.time)).map((slot) => `${slot.date}|${slot.time}`)
@@ -300,6 +479,13 @@ export async function updateHoldBlock(params: {
         toRemove.push({ date: slot.date, time: slot.time, table: params.fromTable });
     }
 
+    const priorPassword = oldKeys
+        .map((slot) => parseHoldPasswordsFromDoc(docs.get(slot.date))[params.fromTable][slot.time])
+        .find((password) => Boolean(password));
+    const sameRange = params.fromTable === params.toTable
+        && params.fromStart === params.toStart
+        && params.fromEnd === params.toEnd;
+
     let calendarWarning: string | undefined;
     if (toAdd.length > 0 || toRemove.length > 0) {
         const changes = dates.map((date) => ({
@@ -313,15 +499,25 @@ export async function updateHoldBlock(params: {
     }
 
     const note = params.note.trim();
+    const password = priorPassword || newHoldPasscode(new Set());
     for (const date of dates) {
         const fresh = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
-        const notes = parseHoldNotesFromDoc(fresh.data() as Record<string, unknown> | undefined);
-        for (const slot of oldKeys.filter((item) => item.date === date)) delete notes[params.fromTable][slot.time];
+        const freshData = fresh.data() as Record<string, unknown> | undefined;
+        const notes = parseHoldNotesFromDoc(freshData);
+        const passwords = parseHoldPasswordsFromDoc(freshData);
+        const exactEnds = parseHoldExactEndsFromDoc(freshData);
+        for (const slot of oldKeys.filter((item) => item.date === date)) {
+            delete notes[params.fromTable][slot.time];
+            delete passwords[params.fromTable][slot.time];
+            if (!sameRange) delete exactEnds[params.fromTable][slot.time];
+        }
         for (const slot of newKeys.filter((item) => item.date === date)) {
             if (note) notes[params.toTable][slot.time] = note;
             else delete notes[params.toTable][slot.time];
+            passwords[params.toTable][slot.time] = password;
+            if (!sameRange) delete exactEnds[params.toTable][slot.time];
         }
-        await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).set({ holdNotes: notes }, { merge: true });
+        await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).set({ holdNotes: notes, holdPasswords: passwords, holdExactEnds: exactEnds }, { merge: true });
     }
 
     const descriptionWarning = await refreshHoldDescriptions(dates);
@@ -331,7 +527,13 @@ export async function updateHoldBlock(params: {
     for (const date of dates) {
         const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
         const data = snap.data() as Record<string, unknown> | undefined;
-        days.push({ date, holds: parseHoldsFromDoc(data), holdNotes: parseHoldNotesFromDoc(data) });
+        days.push({
+            date,
+            holds: parseHoldsFromDoc(data),
+            holdNotes: parseHoldNotesFromDoc(data),
+            holdPasswords: parseHoldPasswordsFromDoc(data),
+            holdExactEnds: parseHoldExactEndsFromDoc(data),
+        });
     }
     revalidatePath('/new-reservation', 'page');
     revalidatePath('/admin/bookings', 'page');
@@ -368,6 +570,164 @@ async function refreshHoldDescriptions(dates: string[]): Promise<string | null> 
     return warnings[0] ?? null;
 }
 
+const CLOSEDOOR_GUARD = 'closedoorGuard';
+const CLOSEDOOR_LOCK_MS = 15 * 60 * 1000;
+const CLOSEDOOR_MAX_FAILURES = 10;
+
+export type CloseHoldResult =
+    | { status: 'ok'; table: HoldTable; closedAt: string; releasedFrom: string | null; releasedUntil: string | null; calendarWarning?: string }
+    | { status: 'invalid' | 'locked' | 'not-started' | 'ended' | 'failed'; error?: string };
+
+function hktSlotMs(date: string, time: string): number {
+    const [year, month, day] = date.split('-').map(Number);
+    const [hour, minute] = time.split(':').map(Number);
+    return fromZonedTime(new Date(year, month - 1, day, hour, minute, 0, 0), HKT).getTime();
+}
+
+function releaseBoundary(now: Date): { date: string; time: string } {
+    const date = formatInTimeZone(now, HKT, 'yyyy-MM-dd');
+    const [hour, minute, second] = formatInTimeZone(now, HKT, 'HH:mm:ss').split(':').map(Number);
+    const total = hour * 60 + minute;
+    const next = second === 0 && minute % 30 === 0 ? total : (Math.floor(total / 30) + 1) * 30;
+    if (next >= 24 * 60) return { date: format(addDays(parseISO(date), 1), 'yyyy-MM-dd'), time: '00:00' };
+    return { date, time: `${String(Math.floor(next / 60)).padStart(2, '0')}:${String(next % 60).padStart(2, '0')}` };
+}
+
+function atOrAfter(slot: { date: string; time: string }, boundary: { date: string; time: string }): boolean {
+    return slot.date > boundary.date || (slot.date === boundary.date && slot.time >= boundary.time);
+}
+
+export async function closeHoldByPasscode(passcode: string): Promise<CloseHoldResult> {
+    if (!/^\d{4}$/.test(passcode)) return { status: 'invalid' };
+    if (!db) return { status: 'failed', error: '後端資料庫未連接。' };
+    const guardRef = db.collection(CLOSEDOOR_GUARD).doc('current');
+    const guard = await guardRef.get();
+    const lockedUntil = typeof guard.data()?.lockedUntilMs === 'number' ? guard.data()?.lockedUntilMs as number : 0;
+    if (lockedUntil > Date.now()) return { status: 'locked' };
+
+    const today = formatInTimeZone(new Date(), HKT, 'yyyy-MM-dd');
+    const dates = [format(subDays(parseISO(today), 1), 'yyyy-MM-dd'), today, format(addDays(parseISO(today), 1), 'yyyy-MM-dd')];
+    const docs = new Map<string, Record<string, unknown> | undefined>();
+    for (const date of dates) {
+        const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+        docs.set(date, snap.exists ? snap.data() as Record<string, unknown> : undefined);
+    }
+
+    type SlotRef = { date: string; time: string; table: HoldTable };
+    const groups = new Map<string, SlotRef[]>();
+    for (const date of dates) {
+        const data = docs.get(date);
+        const holds = parseHoldsFromDoc(data);
+        const passwords = parseHoldPasswordsFromDoc(data);
+        for (const table of ['1', '2'] as const) {
+            for (const time of holds[table]) {
+                const password = passwords[table][time];
+                if (!password) continue;
+                const key = `${table}|${password}`;
+                const list = groups.get(key) ?? [];
+                list.push({ date, time, table });
+                groups.set(key, list);
+            }
+        }
+    }
+
+    const now = new Date();
+    const nowMs = now.getTime();
+    const matches = [...groups.entries()].filter(([key]) => key.endsWith(`|${passcode}`));
+    if (matches.length === 0) {
+        await noteClosedoorFailure(guard.data()?.failedAttempts);
+        return { status: 'invalid' };
+    }
+
+    let active: { table: HoldTable; slots: SlotRef[]; endLabel: string } | null = null;
+    let sawFuture = false;
+    let sawEnded = false;
+    for (const [, slots] of matches) {
+        const ordered = [...slots].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+        const first = ordered[0];
+        const last = ordered[ordered.length - 1];
+        const exact = parseHoldExactEndsFromDoc(docs.get(last.date))[last.table][last.time];
+        const endHm = exact || halfHourEndHm(last.time);
+        const endDate = !exact && endHm === '00:00' ? format(addDays(parseISO(last.date), 1), 'yyyy-MM-dd') : last.date;
+        const startMs = hktSlotMs(first.date, first.time);
+        const endMs = hktSlotMs(endDate, endHm === '00:00' && !exact ? '00:00' : endHm);
+        if (nowMs < startMs) sawFuture = true;
+        else if (nowMs >= endMs) sawEnded = true;
+        else active = { table: first.table, slots: ordered, endLabel: endHm };
+    }
+    if (!active) {
+        await guardRef.set({ failedAttempts: 0, lockedUntilMs: 0 }, { merge: true });
+        return sawFuture ? { status: 'not-started' } : sawEnded ? { status: 'ended' } : { status: 'invalid' };
+    }
+
+    const boundary = releaseBoundary(now);
+    const removing = active.slots.filter((slot) => atOrAfter(slot, boundary));
+    const keeping = active.slots.filter((slot) => !atOrAfter(slot, boundary));
+    const closedAt = formatInTimeZone(now, HKT, 'HH:mm');
+    let calendarWarning: string | undefined;
+
+    if (removing.length > 0) {
+        const changes = dates.map((date) => ({
+            date,
+            toAdd: [] as { time: string; table: HoldTable }[],
+            toRemove: removing.filter((slot) => slot.date === date).map((slot) => ({ time: slot.time, table: slot.table })),
+        })).filter((change) => change.toRemove.length > 0);
+        const removed = await commitBlockedSlotChanges(changes);
+        if (!removed.success) return { status: 'failed', error: removed.error };
+        calendarWarning = removed.calendarWarning;
+    }
+
+    if (keeping.length > 0) {
+        const last = keeping[keeping.length - 1];
+        const datesKept = [...new Set(keeping.map((slot) => slot.date))];
+        let eventData: Record<string, unknown> | undefined;
+        for (const date of datesKept) {
+            const fresh = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+            const exactEnds = parseHoldExactEndsFromDoc(fresh.data() as Record<string, unknown> | undefined);
+            for (const slot of keeping.filter((item) => item.date === date)) delete exactEnds[slot.table][slot.time];
+            if (date === last.date) exactEnds[last.table][last.time] = closedAt;
+            await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).set({ holdExactEnds: exactEnds }, { merge: true });
+            if (date === last.date) eventData = fresh.data() as Record<string, unknown> | undefined;
+        }
+
+        const events = parseDoorMultiEvents(
+            (eventData?.doorHoldEvents as Record<string, unknown> | undefined)?.[last.table],
+        );
+        const event = events.find((item) => expandHalfHoursUntil(item.start, item.end).includes(last.time));
+        if (event) {
+            const period = getAdminSlotPeriodHkt(last.date, event.start, halfHourEndHm(last.time));
+            const patched = await patchHoldEventEnd(last.table, event.eventKey, period.validFrom.toISOString(), now.toISOString());
+            if (patched) calendarWarning = calendarWarning ?? patched;
+        } else if (!calendarWarning) {
+            calendarWarning = '預留已結束，但找不到要縮短的日曆項目。';
+        }
+    }
+
+    await guardRef.set({ failedAttempts: 0, lockedUntilMs: 0 }, { merge: true });
+    revalidatePath('/new-reservation', 'page');
+    revalidatePath('/admin/bookings', 'page');
+    const releasedFrom = removing[0]?.time ?? null;
+    const releasedUntil = removing.length > 0 ? active.endLabel : null;
+    return { status: 'ok', table: active.table, closedAt, releasedFrom, releasedUntil, calendarWarning };
+}
+
+async function noteClosedoorFailure(failedAttempts: unknown) {
+    if (!db) return;
+    const guardRef = db.collection(CLOSEDOOR_GUARD).doc('current');
+    const attempts = (typeof failedAttempts === 'number' ? failedAttempts : 0) + 1;
+    if (attempts >= CLOSEDOOR_MAX_FAILURES) {
+        await guardRef.set({ failedAttempts: 0, lockedUntilMs: Date.now() + CLOSEDOOR_LOCK_MS }, { merge: true });
+        return;
+    }
+    await guardRef.set({ failedAttempts: attempts }, { merge: true });
+}
+
+async function commitBlockedSlotChanges(
+    changes: { date: string; toAdd: { time: string; table: HoldTable }[]; toRemove: { time: string; table: HoldTable }[] }[],
+): Promise<ServerActionResponse> {
+    return writeBlockedSlotChanges(changes);
+}
+
 async function syncReservedSlotsToHoldCalendars(
     plans: { date: string; table: HoldTable; existingEvents: DoorMultiEventRecord[]; toAdd: string[]; toRemove: string[]; storedEvents: { '1': DoorMultiEventRecord[]; '2': DoorMultiEventRecord[] } }[],
 ): Promise<string | null> {
@@ -378,12 +738,15 @@ async function syncReservedSlotsToHoldCalendars(
 
     for (const plan of plans) {
         const actionKey = `reserved-slot-${plan.table}`;
+        const passwordDoc = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(plan.date).get();
+        const tablePasswords = parseHoldPasswordsFromDoc(passwordDoc.data() as Record<string, unknown> | undefined)[plan.table];
         const { desired, toCreate, toDelete } = reconcileDoorMultiCoverage(
             plan.existingEvents,
             actionKey,
             plan.date,
             plan.toAdd,
             plan.toRemove,
+            tablePasswords,
         );
         const bucket = eventsByDate.get(plan.date) ?? {
             '1': [...plan.storedEvents['1']],

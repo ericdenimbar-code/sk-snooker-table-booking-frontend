@@ -81,6 +81,7 @@ export function reconcileDoorMultiCoverage(
   date: string,
   toAdd: Iterable<string>,
   toRemove: Iterable<string>,
+  passwords?: Record<string, string>,
 ): { desired: DoorMultiEventRecord[]; toCreate: DoorMultiEventRecord[]; toDelete: DoorMultiEventRecord[] } {
   const mine = existing.filter((event) => event.actionKey === actionKey);
   const covered = new Set<string>();
@@ -90,12 +91,23 @@ export function reconcileDoorMultiCoverage(
   for (const slot of toAdd) covered.add(slot);
   for (const slot of toRemove) covered.delete(slot);
 
-  const desired = mergeHalfHourSlots(covered).map((range) => ({
-    actionKey,
-    start: range.start,
-    end: range.end,
-    eventKey: eventKeyForDoorMultiRange(actionKey, date, range.start, range.end),
-  }));
+  const byPassword = new Map<string, string[]>();
+  for (const slot of covered) {
+    const password = passwords?.[slot] ?? '';
+    const group = byPassword.get(password) ?? [];
+    group.push(slot);
+    byPassword.set(password, group);
+  }
+  const desired = [...byPassword.entries()].flatMap(([password, slots]) =>
+    mergeHalfHourSlots(slots).map((range) => ({
+      actionKey,
+      start: range.start,
+      end: range.end,
+      eventKey: password
+        ? `${eventKeyForDoorMultiRange(actionKey, date, range.start, range.end)}:${password}`
+        : eventKeyForDoorMultiRange(actionKey, date, range.start, range.end),
+    })),
+  );
   const desiredKeys = new Set(desired.map((event) => event.eventKey));
   const existingKeys = new Set(mine.map((event) => event.eventKey));
   return {

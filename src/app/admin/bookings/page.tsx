@@ -4,7 +4,7 @@ import { Terminal } from "lucide-react";
 import { formatInTimeZone } from "date-fns-tz";
 import { db } from "@/lib/firebase-admin";
 import { getAdminBookingsInitialData } from "@/app/admin/bookings/actions";
-import { BLOCKED_SLOTS_COLLECTION, emptyHoldNotes, emptyHolds, HKT, parseHoldNotesFromDoc, parseHoldsFromDoc, type HoldNotesByTable, type HoldsByTable } from "@/lib/blocked-slots";
+import { BLOCKED_SLOTS_COLLECTION, emptyHoldExactEnds, emptyHoldNotes, emptyHoldPasswords, emptyHolds, HKT, parseHoldExactEndsFromDoc, parseHoldNotesFromDoc, parseHoldPasswordsFromDoc, parseHoldsFromDoc, type HoldExactEndsByTable, type HoldNotesByTable, type HoldPasswordsByTable, type HoldsByTable } from "@/lib/blocked-slots";
 import { BookingsCalendar } from "./bookings-calendar";
 
 export default async function BookingsPage() {
@@ -30,11 +30,15 @@ export default async function BookingsPage() {
   const todayHkt = formatInTimeZone(new Date(), HKT, 'yyyy-MM-dd');
   let initialHolds: HoldsByTable = emptyHolds();
   let initialHoldNotes: HoldNotesByTable = emptyHoldNotes();
+  let initialHoldPasswords: HoldPasswordsByTable = emptyHoldPasswords();
+  let initialHoldExactEnds: HoldExactEndsByTable = emptyHoldExactEnds();
   try {
     const holdDoc = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(todayHkt).get();
     const holdData = holdDoc.exists ? holdDoc.data() as Record<string, unknown> | undefined : undefined;
     initialHolds = parseHoldsFromDoc(holdData);
     initialHoldNotes = parseHoldNotesFromDoc(holdData);
+    initialHoldPasswords = parseHoldPasswordsFromDoc(holdData);
+    initialHoldExactEnds = parseHoldExactEndsFromDoc(holdData);
   } catch (err) {
     console.error('[admin/bookings] Failed to load blockedSlots:', err);
   }
@@ -60,6 +64,8 @@ export default async function BookingsPage() {
                   initialTempAccess={initialResult.accessCodes ?? []}
                   initialHolds={initialHolds}
                   initialHoldNotes={initialHoldNotes}
+                  initialHoldPasswords={initialHoldPasswords}
+                  initialHoldExactEnds={initialHoldExactEnds}
                   initialHoldsDate={todayHkt}
                 />
             </CardContent>
