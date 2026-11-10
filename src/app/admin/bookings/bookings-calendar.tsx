@@ -23,7 +23,7 @@ import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescript
 import { useToast } from '@/hooks/use-toast';
 import type { Reservation, TemporaryAccess } from '@/types';
 import { cancelReservation, getAdminBookingsInitialData, updateAdminReservation, updateReservationSummary } from '@/app/admin/bookings/actions';
-import { getBlockedSlotsForDate, updateHoldBlock } from '@/app/(main)/new-reservation/actions';
+import { cancelHoldBlock, getBlockedSlotsForDate, updateHoldBlock } from '@/app/(main)/new-reservation/actions';
 import { getUserById } from '@/app/admin/users/actions';
 import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions';
 import { cn } from '@/lib/utils';
@@ -547,6 +547,8 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
           if (!current) return;
           setHolds(current.holds);
           setHoldNotes(current.holdNotes);
+          if (current.holdPasswords) setHoldPasswords(current.holdPasswords);
+          if (current.holdExactEnds) setHoldExactEnds(current.holdExactEnds);
           setHoldsDate(dayYmd);
         }}
       />
@@ -619,7 +621,7 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
   block: HoldVisual | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSaved: (days: { date: string; holds: HoldsByTable; holdNotes: HoldNotesByTable }[]) => void;
+  onSaved: (days: { date: string; holds: HoldsByTable; holdNotes: HoldNotesByTable; holdPasswords?: HoldPasswordsByTable; holdExactEnds?: HoldExactEndsByTable }[]) => void;
 }) => {
   const { toast } = useToast();
   const [roomId, setRoomId] = useState<'1' | '2'>('1');
@@ -627,6 +629,7 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
   const [endTime, setEndTime] = useState('11:00');
   const [note, setNote] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [isCancelOpen, setIsCancelOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
   useEffect(() => {
@@ -636,6 +639,7 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
     setEndTime(block.slotEnd);
     setNote(block.note);
     setErrorMessage('');
+    setIsCancelOpen(false);
   }, [open, block?.id]);
 
   if (!block) return null;
@@ -689,7 +693,52 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
     }
   };
 
+  const cancelHold = async () => {
+    if (!block) return;
+    setIsSaving(true);
+    setErrorMessage('');
+    try {
+      const raw = localStorage.getItem('user');
+      const adminUserId = raw ? (JSON.parse(raw) as { id?: string }).id : '';
+      if (!adminUserId) {
+        setErrorMessage('找不到管理員身分，請重新登入。');
+        setIsCancelOpen(false);
+        return;
+      }
+      const result = await cancelHoldBlock({
+        adminUserId,
+        date: block.date,
+        table: block.roomId,
+        start: block.startTime,
+        end: block.slotEnd,
+      });
+      if (!result.success) {
+        const message = result.error || '無法取消預留。';
+        setErrorMessage(message);
+        setIsCancelOpen(false);
+        toast({ variant: 'destructive', title: '取消失敗', description: message });
+        return;
+      }
+      onSaved(result.days ?? []);
+      toast({
+        title: result.calendarWarning ? '預留已取消（日曆同步待處理）' : '預留已取消',
+        description: result.calendarWarning || '這段預留已從前台、管理頁及 Google Calendar 移除，不會發送電郵。',
+        variant: result.calendarWarning ? 'destructive' : 'default',
+      });
+      setIsCancelOpen(false);
+      onOpenChange(false);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : '取消預留時發生錯誤。';
+      setErrorMessage(message);
+      setIsCancelOpen(false);
+      toast({ variant: 'destructive', title: '取消失敗', description: message });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
@@ -751,16 +800,48 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
             />
             {note.trim() && <p className="text-sm font-semibold">顯示為 {holdNoteLabel(note)}</p>}
           </label>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>返回</Button>
-            <Button type="submit" disabled={isSaving || locked}>
-              {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              確定修改
+          <DialogFooter className="gap-2 sm:justify-between">
+            <Button type="button" variant="destructive" onClick={() => setIsCancelOpen(true)} disabled={isSaving}>
+              <Ban className="mr-2 h-4 w-4" />
+              取消預留
             </Button>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>返回</Button>
+              <Button type="submit" disabled={isSaving || locked}>
+                {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                確定修改
+              </Button>
+            </div>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
+    <AlertDialog open={isCancelOpen} onOpenChange={(next) => { if (!isSaving) setIsCancelOpen(next); }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>確定要取消此預留嗎？</AlertDialogTitle>
+          <AlertDialogDescription>
+            枱號 {block.roomId}　{block.date} {block.startTime} - {block.endTime}
+            <br />
+            此動作無法復原。確認後會從前台、管理頁及 Google Calendar 移除這段預留，不會發送電郵。
+            {isSaving && (
+              <span className="mt-3 flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                正在同步 Google Calendar...
+              </span>
+            )}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={isSaving}>返回</AlertDialogCancel>
+          <Button variant="destructive" onClick={() => void cancelHold()} disabled={isSaving}>
+            {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {isSaving ? '正在同步 Google Calendar...' : '確定取消'}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 };
 

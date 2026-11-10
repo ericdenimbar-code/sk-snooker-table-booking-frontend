@@ -535,6 +535,74 @@ export async function updateHoldBlock(params: {
     return calendarWarning ? { success: true, calendarWarning, days } : { success: true, days };
 }
 
+export async function cancelHoldBlock(params: {
+    adminUserId: string;
+    date: string;
+    table: HoldTable;
+    start: string;
+    end: string;
+}): Promise<ServerActionResponse & { days?: { date: string; holds: HoldsByTable; holdNotes: HoldNotesByTable; holdPasswords: HoldPasswordsByTable; holdExactEnds: HoldExactEndsByTable }[] }> {
+    if (!db) return { success: false, error: '後端資料庫未連接。' };
+    const authError = await assertAdminUser(params.adminUserId);
+    if (authError) return { success: false, error: authError };
+
+    const timeSlots = generateHalfHourSlots();
+    if (!isValidHalfHourSlot(params.start, timeSlots) || !isValidHalfHourSlot(params.end, timeSlots)) {
+        return { success: false, error: '時段必須是半小時。' };
+    }
+    if (params.start === params.end) return { success: false, error: '找不到要取消的預留時段。' };
+
+    const keys = expandBookingToHalfHourKeys(params.date, params.start, params.end, timeSlots);
+    if (keys.length === 0) return { success: false, error: '找不到要取消的預留時段。' };
+
+    const dates = [...new Set(keys.map((slot) => slot.date))];
+    for (const slot of keys) {
+        const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(slot.date).get();
+        const holds = parseHoldsFromDoc(snap.exists ? snap.data() as Record<string, unknown> : undefined);
+        if (!holds[params.table].includes(slot.time)) {
+            return { success: false, error: '預留時段已變更，請重新整理。' };
+        }
+    }
+
+    const removed = await applyBlockedSlotChanges(params.adminUserId, dates.map((date) => ({
+        date,
+        toAdd: [],
+        toRemove: keys.filter((slot) => slot.date === date).map((slot) => ({ time: slot.time, table: params.table })),
+    })));
+    if (!removed.success) return { success: false, error: removed.error };
+
+    let noteWarning: string | undefined;
+    try {
+        for (const date of dates) {
+            const fresh = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+            const notes = parseHoldNotesFromDoc(fresh.data() as Record<string, unknown> | undefined);
+            for (const slot of keys.filter((item) => item.date === date)) {
+                delete notes[params.table][slot.time];
+            }
+            await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).set({ holdNotes: notes }, { merge: true });
+        }
+    } catch (e: unknown) {
+        noteWarning = e instanceof Error ? e.message : '備注未能清除。';
+    }
+
+    const days = [];
+    for (const date of dates) {
+        const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+        const data = snap.data() as Record<string, unknown> | undefined;
+        days.push({
+            date,
+            holds: parseHoldsFromDoc(data),
+            holdNotes: parseHoldNotesFromDoc(data),
+            holdPasswords: parseHoldPasswordsFromDoc(data),
+            holdExactEnds: parseHoldExactEndsFromDoc(data),
+        });
+    }
+    revalidatePath('/new-reservation', 'page');
+    revalidatePath('/admin/bookings', 'page');
+    const calendarWarning = removed.calendarWarning ?? (noteWarning ? `預留已取消，但備注未能清除：${noteWarning}` : undefined);
+    return calendarWarning ? { success: true, calendarWarning, days } : { success: true, days };
+}
+
 async function refreshHoldDescriptions(dates: string[]): Promise<string | null> {
     if (!db) return null;
     const warnings: string[] = [];
