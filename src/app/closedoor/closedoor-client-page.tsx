@@ -63,10 +63,11 @@ export function ClosedoorClientPage() {
     <div className="container max-w-lg py-8">
       <div className="space-y-6">
         <div className="space-y-2">
-          <h1 className="text-2xl font-semibold">結束預留時段</h1>
-          <p className="text-sm text-muted-foreground">
-            請輸入該枱預留時段的 4 位密碼。時段開始後輸入正確密碼，該段會結束於現在，餘下時間可再預約。
-          </p>
+          <h1 className="text-2xl font-semibold">離場關閉設施</h1>
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <p>聚會完結離場前，請輸入 4 位密碼以啟動關閉設施程序，謝謝您的配合。</p>
+            <p>如需密碼請聯絡管理員。</p>
+          </div>
         </div>
 
         <form

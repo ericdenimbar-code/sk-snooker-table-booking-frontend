@@ -4,8 +4,8 @@ import { ClosedoorClientPage } from './closedoor-client-page';
 export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
-  title: '結束預留時段',
-  description: '輸入預留時段密碼，結束該段並開放餘下時間',
+  title: '離場關閉設施',
+  description: '聚會完結離場前，請輸入 4 位密碼以啟動關閉設施程序。',
   robots: { index: false, follow: false },
 };
 
