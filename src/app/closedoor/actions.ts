@@ -23,13 +23,9 @@ export async function submitClosedoorPasscode(passcode: string): Promise<
   try {
     const result = await closeHoldByPasscode(passcode);
     if (result.status === 'ok') {
-      const released = result.releasedFrom && result.releasedUntil
-        ? `${result.releasedFrom} - ${result.releasedUntil} 已可再預約。`
-        : '餘下時間已可再預約。';
-      const warning = result.calendarWarning ? ` ${result.calendarWarning}` : '';
       return {
         status: 'ok',
-        message: `枱號${result.table} 預留已於 ${result.closedAt} 結束。${released}${warning}`,
+        message: `謝謝您的光臨，${result.table}號枱即將關閉，請檢查你的隨身物品有否遺留，期待你下次光臨。`,
       };
     }
     if (result.status === 'locked') return { status: 'locked', message: '嘗試次數過多，請 15 分鐘後再試。' };
