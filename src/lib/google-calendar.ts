@@ -536,6 +536,69 @@ export function holdCalendarId(table: '1' | '2'): string | undefined {
   return table === '1' ? CALENDAR_ID_DOOR_CONTROL_HOLD_1 : CALENDAR_ID_DOOR_CONTROL_HOLD_2;
 }
 
+function holdEventIsActive(item: { status?: string | null; start?: { dateTime?: string | null }; end?: { dateTime?: string | null } }, nowMs: number): boolean {
+  if (item.status === 'cancelled') return false;
+  const start = item.start?.dateTime;
+  const end = item.end?.dateTime;
+  if (!start || !end) return false;
+  return new Date(start).getTime() <= nowMs && nowMs < new Date(end).getTime();
+}
+
+async function listHoldEventsAroundNow(table: '1' | '2', now: Date) {
+  if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY) return { error: 'Google Calendar 未設定服務帳號。' as const };
+  const calendarId = holdCalendarId(table);
+  if (!calendarId) return { items: [] as { id?: string | null; status?: string | null; start?: { dateTime?: string | null }; end?: { dateTime?: string | null } }[] };
+  const response = await calendar.events.list({
+    calendarId,
+    timeMin: new Date(now.getTime() - 1000).toISOString(),
+    timeMax: new Date(now.getTime() + 1000).toISOString(),
+    singleEvents: true,
+    orderBy: 'startTime',
+    maxResults: 20,
+  });
+  return { items: response.data.items ?? [] };
+}
+
+export async function holdCalendarActiveNow(table: '1' | '2', now = new Date()): Promise<{ active: boolean; error?: string }> {
+  try {
+    const listed = await listHoldEventsAroundNow(table, now);
+    if ('error' in listed && listed.error) return { active: false, error: listed.error };
+    const nowMs = now.getTime();
+    return { active: (listed.items ?? []).some((item) => holdEventIsActive(item, nowMs)) };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : '無法讀取預留日曆。';
+    return { active: false, error: message };
+  }
+}
+
+export async function endActiveHoldCalendarEvents(table: '1' | '2', now = new Date()): Promise<{ ended: number; error?: string }> {
+  try {
+    const listed = await listHoldEventsAroundNow(table, now);
+    if ('error' in listed && listed.error) return { ended: 0, error: listed.error };
+    const calendarId = holdCalendarId(table);
+    if (!calendarId) return { ended: 0 };
+    const nowMs = now.getTime();
+    const active = (listed.items ?? []).filter((item) => item.id && holdEventIsActive(item, nowMs));
+    let ended = 0;
+    for (const item of active) {
+      const startMs = new Date(item.start?.dateTime || now).getTime();
+      if (startMs >= nowMs) continue;
+      await calendar.events.patch({
+        calendarId,
+        eventId: item.id!,
+        requestBody: {
+          end: { dateTime: now.toISOString(), timeZone: HKT_TIMEZONE },
+        },
+      });
+      ended += 1;
+    }
+    return { ended };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : '無法更新預留日曆結束時間。';
+    return { ended: 0, error: message };
+  }
+}
+
 export async function patchHoldEventEnd(
   table: '1' | '2',
   eventKey: string,

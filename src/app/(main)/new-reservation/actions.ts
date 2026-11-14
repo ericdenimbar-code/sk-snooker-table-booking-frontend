@@ -660,24 +660,23 @@ function atOrAfter(slot: { date: string; time: string }, boundary: { date: strin
     return slot.date > boundary.date || (slot.date === boundary.date && slot.time >= boundary.time);
 }
 
-export async function closeHoldByPasscode(passcode: string): Promise<CloseHoldResult> {
-    if (!/^\d{4}$/.test(passcode)) return { status: 'invalid' };
-    if (!db) return { status: 'failed', error: '後端資料庫未連接。' };
-    const guardRef = db.collection(CLOSEDOOR_GUARD).doc('current');
-    const guard = await guardRef.get();
-    const lockedUntil = typeof guard.data()?.lockedUntilMs === 'number' ? guard.data()?.lockedUntilMs as number : 0;
-    if (lockedUntil > Date.now()) return { status: 'locked' };
+type HoldSlotRef = { date: string; time: string; table: HoldTable };
+type ActiveHold = { table: HoldTable; slots: HoldSlotRef[]; endLabel: string };
 
-    const today = formatInTimeZone(new Date(), HKT, 'yyyy-MM-dd');
+async function readNearbyHoldDocs(now: Date): Promise<{ dates: string[]; docs: Map<string, Record<string, unknown> | undefined> } | null> {
+    if (!db) return null;
+    const today = formatInTimeZone(now, HKT, 'yyyy-MM-dd');
     const dates = [format(subDays(parseISO(today), 1), 'yyyy-MM-dd'), today, format(addDays(parseISO(today), 1), 'yyyy-MM-dd')];
     const docs = new Map<string, Record<string, unknown> | undefined>();
     for (const date of dates) {
         const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
         docs.set(date, snap.exists ? snap.data() as Record<string, unknown> : undefined);
     }
+    return { dates, docs };
+}
 
-    type SlotRef = { date: string; time: string; table: HoldTable };
-    const groups = new Map<string, SlotRef[]>();
+function collectHoldGroups(docs: Map<string, Record<string, unknown> | undefined>, dates: string[]): Map<string, HoldSlotRef[]> {
+    const groups = new Map<string, HoldSlotRef[]>();
     for (const date of dates) {
         const data = docs.get(date);
         const holds = parseHoldsFromDoc(data);
@@ -685,44 +684,57 @@ export async function closeHoldByPasscode(passcode: string): Promise<CloseHoldRe
         for (const table of ['1', '2'] as const) {
             for (const time of holds[table]) {
                 const password = passwords[table][time];
-                if (!password) continue;
-                const key = `${table}|${password}`;
+                const key = `${table}|${password || 'nopw'}`;
                 const list = groups.get(key) ?? [];
                 list.push({ date, time, table });
                 groups.set(key, list);
             }
         }
     }
+    return groups;
+}
 
-    const now = new Date();
-    const nowMs = now.getTime();
-    const matches = [...groups.entries()].filter(([key]) => key.endsWith(`|${passcode}`));
-    if (matches.length === 0) {
-        await noteClosedoorFailure(guard.data()?.failedAttempts);
-        return { status: 'invalid' };
+function contiguousHoldRuns(slots: HoldSlotRef[]): HoldSlotRef[][] {
+    const ordered = [...slots].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+    const runs: HoldSlotRef[][] = [];
+    let current: HoldSlotRef[] = [];
+    const follows = (prev: HoldSlotRef, slot: HoldSlotRef) => {
+        const end = halfHourEndHm(prev.time);
+        if (end === '00:00') {
+            return slot.time === '00:00' && slot.date === format(addDays(parseISO(prev.date), 1), 'yyyy-MM-dd');
+        }
+        return prev.date === slot.date && slot.time === end;
+    };
+    for (const slot of ordered) {
+        const prev = current[current.length - 1];
+        if (!prev || follows(prev, slot)) current.push(slot);
+        else {
+            runs.push(current);
+            current = [slot];
+        }
     }
+    if (current.length > 0) runs.push(current);
+    return runs;
+}
 
-    let active: { table: HoldTable; slots: SlotRef[]; endLabel: string } | null = null;
-    let sawFuture = false;
-    let sawEnded = false;
-    for (const [, slots] of matches) {
-        const ordered = [...slots].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
-        const first = ordered[0];
-        const last = ordered[ordered.length - 1];
-        const exact = parseHoldExactEndsFromDoc(docs.get(last.date))[last.table][last.time];
-        const endHm = exact || halfHourEndHm(last.time);
-        const endDate = !exact && endHm === '00:00' ? format(addDays(parseISO(last.date), 1), 'yyyy-MM-dd') : last.date;
-        const startMs = hktSlotMs(first.date, first.time);
-        const endMs = hktSlotMs(endDate, endHm === '00:00' && !exact ? '00:00' : endHm);
-        if (nowMs < startMs) sawFuture = true;
-        else if (nowMs >= endMs) sawEnded = true;
-        else active = { table: first.table, slots: ordered, endLabel: endHm };
-    }
-    if (!active) {
-        await guardRef.set({ failedAttempts: 0, lockedUntilMs: 0 }, { merge: true });
-        return sawFuture ? { status: 'not-started' } : sawEnded ? { status: 'ended' } : { status: 'invalid' };
-    }
+function describeHold(slots: HoldSlotRef[], docs: Map<string, Record<string, unknown> | undefined>, nowMs: number):
+    | { kind: 'active'; hold: ActiveHold }
+    | { kind: 'future' }
+    | { kind: 'ended' } {
+    const ordered = [...slots].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+    const first = ordered[0];
+    const last = ordered[ordered.length - 1];
+    const exact = parseHoldExactEndsFromDoc(docs.get(last.date))[last.table][last.time];
+    const endHm = exact || halfHourEndHm(last.time);
+    const endDate = !exact && endHm === '00:00' ? format(addDays(parseISO(last.date), 1), 'yyyy-MM-dd') : last.date;
+    const startMs = hktSlotMs(first.date, first.time);
+    const endMs = hktSlotMs(endDate, endHm === '00:00' && !exact ? '00:00' : endHm);
+    if (nowMs < startMs) return { kind: 'future' };
+    if (nowMs >= endMs) return { kind: 'ended' };
+    return { kind: 'active', hold: { table: first.table, slots: ordered, endLabel: endHm } };
+}
 
+async function applyHoldClose(active: ActiveHold, now: Date, dates: string[]): Promise<{ error?: string; calendarWarning?: string; releasedFrom: string | null; releasedUntil: string | null }> {
     const boundary = releaseBoundary(now);
     const removing = active.slots.filter((slot) => atOrAfter(slot, boundary));
     const keeping = active.slots.filter((slot) => !atOrAfter(slot, boundary));
@@ -736,11 +748,11 @@ export async function closeHoldByPasscode(passcode: string): Promise<CloseHoldRe
             toRemove: removing.filter((slot) => slot.date === date).map((slot) => ({ time: slot.time, table: slot.table })),
         })).filter((change) => change.toRemove.length > 0);
         const removed = await commitBlockedSlotChanges(changes);
-        if (!removed.success) return { status: 'failed', error: removed.error };
+        if (!removed.success) return { error: removed.error, releasedFrom: null, releasedUntil: null };
         calendarWarning = removed.calendarWarning;
     }
 
-    if (keeping.length > 0) {
+    if (keeping.length > 0 && db) {
         const last = keeping[keeping.length - 1];
         const datesKept = [...new Set(keeping.map((slot) => slot.date))];
         let eventData: Record<string, unknown> | undefined;
@@ -766,12 +778,99 @@ export async function closeHoldByPasscode(passcode: string): Promise<CloseHoldRe
         }
     }
 
+    return {
+        calendarWarning,
+        releasedFrom: removing[0]?.time ?? null,
+        releasedUntil: removing.length > 0 ? active.endLabel : null,
+    };
+}
+
+export async function closeHoldByPasscode(passcode: string): Promise<CloseHoldResult> {
+    if (!/^\d{4}$/.test(passcode)) return { status: 'invalid' };
+    if (!db) return { status: 'failed', error: '後端資料庫未連接。' };
+    const guardRef = db.collection(CLOSEDOOR_GUARD).doc('current');
+    const guard = await guardRef.get();
+    const lockedUntil = typeof guard.data()?.lockedUntilMs === 'number' ? guard.data()?.lockedUntilMs as number : 0;
+    if (lockedUntil > Date.now()) return { status: 'locked' };
+
+    const now = new Date();
+    const loaded = await readNearbyHoldDocs(now);
+    if (!loaded) return { status: 'failed', error: '後端資料庫未連接。' };
+    const groups = collectHoldGroups(loaded.docs, loaded.dates);
+    const matches = [...groups.entries()].filter(([key]) => key.endsWith(`|${passcode}`));
+    if (matches.length === 0) {
+        await noteClosedoorFailure(guard.data()?.failedAttempts);
+        return { status: 'invalid' };
+    }
+
+    let active: ActiveHold | null = null;
+    let sawFuture = false;
+    let sawEnded = false;
+    for (const [, slots] of matches) {
+        const described = describeHold(slots, loaded.docs, now.getTime());
+        if (described.kind === 'future') sawFuture = true;
+        else if (described.kind === 'ended') sawEnded = true;
+        else active = described.hold;
+    }
+    if (!active) {
+        await guardRef.set({ failedAttempts: 0, lockedUntilMs: 0 }, { merge: true });
+        return sawFuture ? { status: 'not-started' } : sawEnded ? { status: 'ended' } : { status: 'invalid' };
+    }
+
+    const applied = await applyHoldClose(active, now, loaded.dates);
+    if (applied.error) return { status: 'failed', error: applied.error };
+
     await guardRef.set({ failedAttempts: 0, lockedUntilMs: 0 }, { merge: true });
     revalidatePath('/new-reservation', 'page');
     revalidatePath('/admin/bookings', 'page');
-    const releasedFrom = removing[0]?.time ?? null;
-    const releasedUntil = removing.length > 0 ? active.endLabel : null;
-    return { status: 'ok', table: active.table, closedAt, releasedFrom, releasedUntil, calendarWarning };
+    return {
+        status: 'ok',
+        table: active.table,
+        closedAt: formatInTimeZone(now, HKT, 'HH:mm'),
+        releasedFrom: applied.releasedFrom,
+        releasedUntil: applied.releasedUntil,
+        calendarWarning: applied.calendarWarning,
+    };
+}
+
+export async function closeActiveHoldForAdmin(adminUserId: string, table: HoldTable, now = new Date()): Promise<CloseHoldResult> {
+    const authError = await assertAdminUser(adminUserId);
+    if (authError) return { status: 'failed', error: authError };
+    const loaded = await readNearbyHoldDocs(now);
+    if (!loaded) return { status: 'failed', error: '後端資料庫未連接。' };
+
+    const actives: ActiveHold[] = [];
+    let sawFuture = false;
+    for (const [key, slots] of collectHoldGroups(loaded.docs, loaded.dates)) {
+        if (!key.startsWith(`${table}|`)) continue;
+        for (const run of contiguousHoldRuns(slots)) {
+            const described = describeHold(run, loaded.docs, now.getTime());
+            if (described.kind === 'active') actives.push(described.hold);
+            else if (described.kind === 'future') sawFuture = true;
+        }
+    }
+    if (actives.length === 0) return sawFuture ? { status: 'not-started' } : { status: 'ended' };
+
+    let calendarWarning: string | undefined;
+    let releasedFrom: string | null = null;
+    let releasedUntil: string | null = null;
+    for (const active of actives) {
+        const applied = await applyHoldClose(active, now, loaded.dates);
+        if (applied.error) return { status: 'failed', error: applied.error };
+        calendarWarning = calendarWarning ?? applied.calendarWarning;
+        releasedFrom = releasedFrom ?? applied.releasedFrom;
+        releasedUntil = releasedUntil ?? applied.releasedUntil;
+    }
+    revalidatePath('/new-reservation', 'page');
+    revalidatePath('/admin/bookings', 'page');
+    return {
+        status: 'ok',
+        table,
+        closedAt: formatInTimeZone(now, HKT, 'HH:mm'),
+        releasedFrom,
+        releasedUntil,
+        calendarWarning,
+    };
 }
 
 async function noteClosedoorFailure(failedAttempts: unknown) {

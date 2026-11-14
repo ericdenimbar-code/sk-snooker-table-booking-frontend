@@ -1,346 +1,164 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, RefreshCw } from 'lucide-react';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Label } from '@/components/ui/label';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { useToast } from '@/hooks/use-toast';
-import { generateHalfHourSlots } from '@/lib/blocked-slots';
-import { parseHm, shutdownWindowCrossesMidnight } from '@/lib/facility-shutdown-window';
-import {
-  cancelFacilityShutdown,
-  getFacilityShutdownSettings,
-  refreshFacilityShutdownPasscode,
-  saveFacilityShutdown,
-  type FacilityShutdownLogView,
-  type FacilityShutdownSettingsView,
-} from './actions';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { cn } from '@/lib/utils';
+import { getHoldSwitchState, turnOffAllHolds, turnOffHoldTable } from './actions';
 
-function randomPasscode(): string {
-  const value = crypto.getRandomValues(new Uint32Array(1))[0] % 10000;
-  return String(value).padStart(4, '0');
+type TableKey = '1' | '2';
+
+function readAdminId(): string {
+  const raw = localStorage.getItem('user');
+  if (!raw) return '';
+  try {
+    return (JSON.parse(raw) as { id?: string }).id ?? '';
+  } catch {
+    return '';
+  }
 }
 
-const selectClass =
-  'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2';
+function PowerSwitch({
+  label,
+  on,
+  enabled,
+  onTurnOff,
+}: {
+  label: string;
+  on: boolean;
+  enabled: boolean;
+  onTurnOff: () => void;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <p className="text-2xl font-black tracking-wide text-neutral-900">{label}</p>
+      <button
+        type="button"
+        aria-label={`${label} ${on ? 'ON' : 'OFF'}`}
+        aria-pressed={on}
+        disabled={!enabled}
+        onClick={onTurnOff}
+        className={cn(
+          'relative h-[4.75rem] w-56 rounded-full shadow-[0_6px_14px_rgba(0,0,0,0.18)] transition-colors',
+          on ? 'bg-[#3dce6e]' : 'bg-[#c8c8c8]',
+          enabled ? 'cursor-pointer' : 'cursor-not-allowed',
+        )}
+      >
+        <span
+          className={cn(
+            'absolute top-1/2 -translate-y-1/2 text-[1.65rem] font-semibold tracking-wider',
+            on ? 'left-8 text-white/85' : 'right-7 text-white/75',
+          )}
+        >
+          {on ? 'ON' : 'OFF'}
+        </span>
+        <span
+          className={cn(
+            'absolute top-1.5 h-[3.9rem] w-[3.9rem] rounded-full bg-white shadow-[0_4px_10px_rgba(0,0,0,0.22)]',
+            on ? 'right-1.5' : 'left-1.5',
+          )}
+        />
+      </button>
+    </div>
+  );
+}
 
 export function FacilityShutdownClientPage() {
-  const { toast } = useToast();
-  const slots = useMemo(() => generateHalfHourSlots(), []);
-  const [adminUserId, setAdminUserId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [passcode, setPasscode] = useState('');
-  const [startTime, setStartTime] = useState('');
-  const [endTime, setEndTime] = useState('');
-  const [isActive, setIsActive] = useState(false);
-  const [windowLabel, setWindowLabel] = useState<string | null>(null);
-  const [effectiveUntilIso, setEffectiveUntilIso] = useState<string | null>(null);
-  const [logs, setLogs] = useState<FacilityShutdownLogView[]>([]);
-  const latestLogId = useRef<string | null>(null);
-  const initialized = useRef(false);
-  const isActiveRef = useRef(false);
+  const [table1, setTable1] = useState(false);
+  const [table2, setTable2] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const refreshTicket = useRef(0);
+  const [statusText, setStatusText] = useState('');
+  const [error, setError] = useState('');
 
-  const resetToPicker = useCallback(() => {
-    isActiveRef.current = false;
-    setIsActive(false);
-    setWindowLabel(null);
-    setEffectiveUntilIso(null);
-    setStartTime('');
-    setEndTime('');
-    setPasscode(randomPasscode());
+  const refresh = useCallback(async () => {
+    if (pendingRef.current) return;
+    const ticket = refreshTicket.current;
+    const adminUserId = readAdminId();
+    const result = await getHoldSwitchState(adminUserId);
+    if (pendingRef.current || ticket !== refreshTicket.current) return;
+    if (!result.success && result.error && !result.table1 && !result.table2) {
+      setTable1(false);
+      setTable2(false);
+      setError(result.error);
+    } else {
+      setTable1(result.table1);
+      setTable2(result.table2);
+      setError(result.error && !result.success ? result.error : '');
+    }
+    setReady(true);
   }, []);
 
-  const showActive = useCallback((settings: FacilityShutdownSettingsView) => {
-    isActiveRef.current = true;
-    setIsActive(true);
-    setPasscode(settings.passcode ?? '');
-    setStartTime(settings.startTime ?? '');
-    setEndTime(settings.endTime ?? '');
-    setWindowLabel(settings.windowLabel);
-    setEffectiveUntilIso(settings.effectiveUntilIso);
-  }, []);
-
-  const applySettings = useCallback((settings: FacilityShutdownSettingsView, announceTrigger: boolean) => {
-    setLogs(settings.logs);
-    const newestLogId = settings.logs[0]?.id ?? null;
-
-    if (!initialized.current) {
-      initialized.current = true;
-      latestLogId.current = newestLogId;
-      if (settings.isActive && settings.passcode && settings.windowLabel) showActive(settings);
-      else resetToPicker();
-      return;
-    }
-
-    if (newestLogId && newestLogId !== latestLogId.current) {
-      latestLogId.current = newestLogId;
-      resetToPicker();
-      if (announceTrigger) {
-        toast({ title: '離場關機已觸發', description: '時段已結束，可以重新設定。' });
-      }
-      return;
-    }
-
-    if (settings.isActive && settings.passcode && settings.windowLabel) {
-      showActive(settings);
-      return;
-    }
-
-    if (isActiveRef.current) resetToPicker();
-  }, [resetToPicker, showActive, toast]);
-
-  const load = useCallback(async (userId: string, announceTrigger: boolean) => {
-    const result = await getFacilityShutdownSettings(userId);
-    if (!result.success) {
-      toast({ variant: 'destructive', title: '載入失敗', description: result.error });
-      return;
-    }
-    applySettings(result.settings, announceTrigger);
-  }, [applySettings, toast]);
-
   useEffect(() => {
-    const raw = localStorage.getItem('user');
-    if (!raw) {
-      setLoading(false);
-      return;
-    }
-    try {
-      const user = JSON.parse(raw) as { id?: string };
-      if (!user.id) {
-        setLoading(false);
-        return;
-      }
-      setAdminUserId(user.id);
-      void load(user.id, false).finally(() => setLoading(false));
-    } catch {
-      setLoading(false);
-    }
-  }, [load]);
-
-  useEffect(() => {
-    if (!isActive || !effectiveUntilIso) return;
-    const endsAt = new Date(effectiveUntilIso).getTime() + 60_000;
-    const delay = endsAt - Date.now();
-    if (delay <= 0) {
-      resetToPicker();
-      return;
-    }
-    const timer = window.setTimeout(() => resetToPicker(), delay);
-    return () => window.clearTimeout(timer);
-  }, [isActive, effectiveUntilIso, resetToPicker]);
-
-  useEffect(() => {
-    if (!adminUserId) return;
-    const timer = window.setInterval(() => {
-      void load(adminUserId, true);
-    }, 8000);
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 15000);
     return () => window.clearInterval(timer);
-  }, [adminUserId, load]);
+  }, [refresh]);
 
-  const crossesMidnight = startTime && endTime ? shutdownWindowCrossesMidnight(startTime, endTime) : false;
-
-  const handleRefresh = async () => {
-    if (!isActive) {
-      setPasscode(randomPasscode());
+  const turnOffTable = async (table: TableKey) => {
+    if (pending) return;
+    const adminUserId = readAdminId();
+    if (!adminUserId) {
+      setError('找不到管理員身分，請重新登入。');
       return;
     }
-    if (!adminUserId) return;
-    setSaving(true);
+    pendingRef.current = true;
+    refreshTicket.current += 1;
+    setPending(true);
+    setError('');
+    setStatusText('');
+    if (table === '1') setTable1(false);
+    else setTable2(false);
     try {
-      const result = await refreshFacilityShutdownPasscode(adminUserId);
-      if (!result.success) {
-        toast({ variant: 'destructive', title: '無法更新密碼', description: result.error });
-        return;
-      }
-      setPasscode(result.passcode);
-      toast({ title: '已換一組密碼' });
+      const result = await turnOffHoldTable(adminUserId, table);
+      if (!result.success) setError(result.error || '未能關閉。');
+      else if (result.warning) setError(result.warning);
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : '未能關閉。');
     } finally {
-      setSaving(false);
+      pendingRef.current = false;
+      setPending(false);
+      await refresh();
     }
   };
 
-  const handleSave = async () => {
-    if (!adminUserId) return;
-    if (parseHm(startTime) === null || parseHm(endTime) === null) {
-      toast({ variant: 'destructive', title: '請選擇開始與結束時間' });
+  const turnOffAll = async () => {
+    if (pending) return;
+    const adminUserId = readAdminId();
+    if (!adminUserId) {
+      setError('找不到管理員身分，請重新登入。');
       return;
     }
-    if (startTime === endTime) {
-      toast({ variant: 'destructive', title: '開始與結束時間不能相同' });
-      return;
-    }
-    setSaving(true);
+    pendingRef.current = true;
+    refreshTicket.current += 1;
+    setPending(true);
+    setError('');
+    setTable1(false);
+    setTable2(false);
+    setStatusText('枱號1正在關閉，30秒後關閉枱號2。');
     try {
-      const result = await saveFacilityShutdown({
-        adminUserId,
-        passcode,
-        startTime,
-        endTime,
-      });
-      if (!result.success) {
-        toast({ variant: 'destructive', title: '無法儲存', description: result.error });
-        return;
-      }
-      showActive(result.settings);
-      setLogs(result.settings.logs);
-      toast({ title: '時段已生效' });
+      const result = await turnOffAllHolds(adminUserId);
+      if (!result.success) setError(result.error || '未能全部關閉。');
+      else if (result.warning) setError(result.warning);
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : '未能全部關閉。');
     } finally {
-      setSaving(false);
+      setStatusText('');
+      pendingRef.current = false;
+      setPending(false);
+      await refresh();
     }
   };
 
-  const handleCancel = async () => {
-    if (!adminUserId) return;
-    setSaving(true);
-    try {
-      const result = await cancelFacilityShutdown(adminUserId);
-      if (!result.success) {
-        toast({ variant: 'destructive', title: '無法取消', description: result.error });
-        return;
-      }
-      resetToPicker();
-      toast({ title: '已取消時段' });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (loading || !passcode) {
-    return (
-      <div className="flex h-48 items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    );
-  }
+  const bothOn = table1 && table2;
 
   return (
-    <>
-      <Alert>
-        <AlertTitle>離場密碼已改由每段預留產生</AlertTitle>
-        <AlertDescription>
-          /closedoor 現在一直顯示 4 位密碼欄。每段預留成功後會產生自己的密碼，顯示在預訂管理該段的 PW。時段開始後輸入該密碼，會把該枱預留截到當下，餘下時間恢復可預約。此頁的舊時段密碼不會再啟動 /closedoor。
-        </AlertDescription>
-      </Alert>
-      <Card>
-        <CardHeader>
-          <CardTitle>4 位數字密碼</CardTitle>
-          <CardDescription>以下是舊的全場時段設定，不再控制 /closedoor。</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="space-y-3 text-center">
-            <div className="flex items-center justify-center gap-3">
-              <p className="text-5xl font-bold tracking-[0.35em] tabular-nums">{passcode}</p>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                onClick={() => void handleRefresh()}
-                disabled={saving}
-                aria-label="重新整理"
-              >
-                <RefreshCw className="h-4 w-4" />
-              </Button>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              {isActive ? '此密碼已生效。按下重新整理會立即換成另一組。' : '此密碼尚未儲存。可先重新整理，再按確定寫入。'}
-            </p>
-          </div>
-
-          {isActive && windowLabel ? (
-            <div className="space-y-4">
-              <h3 className="text-lg font-medium">時段現正生效</h3>
-              <div className="rounded-md border bg-muted/50 p-4 text-center">
-                <p className="text-xl font-bold tabular-nums">{windowLabel}</p>
-              </div>
-              <Button type="button" variant="outline" className="w-full" disabled={saving} onClick={() => void handleCancel()}>
-                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                取消
-              </Button>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div>
-                <h3 className="text-lg font-medium mb-2">選擇生效時段</h3>
-                <p className="text-sm text-muted-foreground mb-4">
-                  以香港時間計算。例如 22:00 至次日 04:00，凌晨 01:00 仍算在時段內。日期以按下確定的當天計算。
-                </p>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="shutdown-start">開始時間</Label>
-                    <select
-                      id="shutdown-start"
-                      className={selectClass}
-                      value={startTime}
-                      onChange={(event) => setStartTime(event.target.value)}
-                    >
-                      <option value="">請選擇</option>
-                      {slots.map((slot) => (
-                        <option key={slot} value={slot}>{slot}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="shutdown-end">結束時間</Label>
-                    <select
-                      id="shutdown-end"
-                      className={selectClass}
-                      value={endTime}
-                      onChange={(event) => setEndTime(event.target.value)}
-                    >
-                      <option value="">請選擇</option>
-                      {slots.map((slot) => (
-                        <option key={`end-${slot}`} value={slot}>{slot}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                {crossesMidnight && (
-                  <p className="mt-3 text-sm text-muted-foreground">結束時間早於開始時間，會視為跨日至次日。</p>
-                )}
-              </div>
-              <Button type="button" size="lg" className="w-full" disabled={saving} onClick={() => void handleSave()}>
-                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                確定
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>觸發紀錄</CardTitle>
-          <CardDescription>每一次在公開頁成功按下關閉後的紀錄，新的在上。</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {logs.length === 0 ? (
-            <p className="text-sm text-muted-foreground">尚未有完成關機的紀錄。</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>觸發時間（香港時間）</TableHead>
-                  <TableHead>生效時段</TableHead>
-                  <TableHead>密碼</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {logs.map((log) => (
-                  <TableRow key={log.id}>
-                    <TableCell className="tabular-nums">{log.triggeredAtLabel}</TableCell>
-                    <TableCell className="tabular-nums">{log.windowLabel}</TableCell>
-                    <TableCell className="tabular-nums">{log.passcode}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-    </>
+    <div className="mx-auto flex min-h-[70vh] max-w-md flex-col items-center justify-center gap-12 bg-white px-6 py-12">
+      <PowerSwitch label="枱號 1" on={table1} enabled={ready && !pending && table1} onTurnOff={() => void turnOffTable('1')} />
+      <PowerSwitch label="枱號 2" on={table2} enabled={ready && !pending && table2} onTurnOff={() => void turnOffTable('2')} />
+      <PowerSwitch label="全關" on={bothOn} enabled={ready && !pending && bothOn} onTurnOff={() => void turnOffAll()} />
+      {statusText && <p className="text-center text-sm text-muted-foreground">{statusText}</p>}
+      {error && <p className="text-center text-sm text-destructive">{error}</p>}
+    </div>
   );
 }
