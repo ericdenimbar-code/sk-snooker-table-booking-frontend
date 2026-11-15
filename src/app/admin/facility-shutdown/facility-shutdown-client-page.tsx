@@ -131,18 +131,24 @@ export function FacilityShutdownClientPage() {
     else if (result.warning) setError(result.warning);
   });
 
-  const confirmOn = () => run(async () => {
-    if (!openTable) return;
-    const result = await turnOnHoldTable(readAdminId(), openTable, Number(hours));
-    if (!result.success) {
-      setPopupError(result.error || '未能開啟。');
-      pendingRef.current = false;
-      return;
-    }
-    if (result.warning) setError(result.warning);
+  const confirmOn = () => {
+    const table = openTable;
+    const selected = hours;
+    if (!table) return;
     setOpenTable(null);
     setPopupError('');
-  });
+    setStatusText('正在開啟預留…');
+    void run(async () => {
+      const result = await turnOnHoldTable(readAdminId(), table, Number(selected));
+      if (!result.success) {
+        setHours(selected);
+        setPopupError(result.error || '未能開啟。');
+        setOpenTable(table);
+        return;
+      }
+      if (result.warning) setError(result.warning);
+    });
+  };
 
   const turnOffAll = () => run(async () => {
     setTable1((current) => ({ ...current, on: false }));

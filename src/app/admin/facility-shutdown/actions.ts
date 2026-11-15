@@ -3,6 +3,7 @@
 import { format, parseISO, subDays } from 'date-fns';
 import { formatInTimeZone } from 'date-fns-tz';
 import {
+  alignHoldCalendarExactTimes,
   applyBlockedSlotChanges,
   closeActiveHoldForAdmin,
   listActiveHoldPanels,
@@ -145,6 +146,8 @@ export async function turnOnHoldTable(adminUserId: string, table: HoldTable, hou
     const starts = parseHoldExactStartsFromDoc(snap.data() as Record<string, unknown> | undefined);
     starts[table][slotStart] = window.startHm;
     await ref.set({ holdExactStarts: starts }, { merge: true });
+    const aligned = await alignHoldCalendarExactTimes([window.startDate]);
+    if (aligned) added.calendarWarning = added.calendarWarning ?? aligned;
   }
 
   const regenerated = await regenerateFacilityPasswords();

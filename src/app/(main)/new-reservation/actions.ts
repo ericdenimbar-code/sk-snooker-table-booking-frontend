@@ -1042,7 +1042,7 @@ async function syncReservedSlotsToHoldCalendars(
     return warnings.length > 0 ? `預留時段已更新，但日曆同步未完成：${warnings[0]}` : null;
 }
 
-async function alignHoldCalendarExactTimes(dates: string[]): Promise<string | null> {
+export async function alignHoldCalendarExactTimes(dates: string[]): Promise<string | null> {
     if (!db) return null;
     for (const date of dates) {
         const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
@@ -1113,37 +1113,13 @@ function splitSlotRuns<T extends { date: string; time: string }>(slots: T[]): T[
     return runs;
 }
 
-async function resyncHoldPasswordEvents(dates: string[]): Promise<string | null> {
-    if (!db || dates.length === 0) return null;
-    const plans: { date: string; table: HoldTable; existingEvents: DoorMultiEventRecord[]; toAdd: string[]; toRemove: string[]; storedEvents: { '1': DoorMultiEventRecord[]; '2': DoorMultiEventRecord[] } }[] = [];
-    for (const date of dates) {
-        const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
-        const data = snap.data() as Record<string, unknown> | undefined;
-        const stored = data?.doorHoldEvents;
-        const holds = parseHoldsFromDoc(data);
-        const storedEvents = {
-            '1': parseDoorMultiEvents(stored && typeof stored === 'object' ? (stored as Record<string, unknown>)['1'] : undefined),
-            '2': parseDoorMultiEvents(stored && typeof stored === 'object' ? (stored as Record<string, unknown>)['2'] : undefined),
-        };
-        for (const table of ['1', '2'] as const) {
-            if (storedEvents[table].length === 0 && holds[table].length === 0) continue;
-            plans.push({
-                date,
-                table,
-                existingEvents: storedEvents[table],
-                toAdd: storedEvents[table].length === 0 ? holds[table] : [],
-                toRemove: [],
-                storedEvents,
-            });
-        }
-    }
-    return syncReservedSlotsToHoldCalendars(plans);
-}
-
 export async function regenerateFacilityPasswords(): Promise<FacilityPasswordSet> {
     const empty = { openPasswords: { '1': '0000', '2': '0000' } as { '1': string; '2': string }, allOffPassword: '0000' };
     if (!db) return empty;
-    const snaps = await db.collection(BLOCKED_SLOTS_COLLECTION).get();
+    const earliest = format(subDays(parseISO(formatInTimeZone(new Date(), HKT, 'yyyy-MM-dd')), 1), 'yyyy-MM-dd');
+    const snaps = await db.collection(BLOCKED_SLOTS_COLLECTION)
+        .where(admin.firestore.FieldPath.documentId(), '>=', earliest)
+        .get();
     type Slot = { date: string; time: string; table: HoldTable };
     const groups = new Map<string, Slot[]>();
     snaps.docs.forEach((snap) => {
@@ -1171,7 +1147,6 @@ export async function regenerateFacilityPasswords(): Promise<FacilityPasswordSet
     const allOffPassword = unusedPasscode(used);
     let batch = db.batch();
     let writes = 0;
-    const changedDates: string[] = [];
     const commitBatch = async () => {
         if (writes === 0) return;
         await batch.commit();
@@ -1189,18 +1164,16 @@ export async function regenerateFacilityPasswords(): Promise<FacilityPasswordSet
             }
         }
         batch.set(snap.ref, { holdPasswords: passwords }, { merge: true });
-        changedDates.push(snap.id);
         writes += 1;
         if (writes >= 400) await commitBatch();
     }
     batch.set(db.collection(FACILITY_CONTROLS).doc('current'), { openPasswords, allOffPassword }, { merge: true });
     writes += 1;
     await commitBatch();
-    const warning = await resyncHoldPasswordEvents(changedDates);
     revalidatePath('/admin/bookings', 'page');
     revalidatePath('/admin/facility-shutdown', 'page');
     revalidatePath('/new-reservation', 'page');
-    return warning ? { openPasswords, allOffPassword, warning: warning ?? undefined } : { openPasswords, allOffPassword };
+    return { openPasswords, allOffPassword };
 }
 
 export async function readFacilityPasswords(): Promise<FacilityPasswordSet> {
