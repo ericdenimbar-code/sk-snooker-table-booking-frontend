@@ -10,6 +10,7 @@ export type HoldsByTable = Record<HoldTable, string[]>;
 export type HoldNotesByTable = Record<HoldTable, Record<string, string>>;
 export type HoldPasswordsByTable = Record<HoldTable, Record<string, string>>;
 export type HoldExactEndsByTable = Record<HoldTable, Record<string, string>>;
+export type HoldExactStartsByTable = HoldExactEndsByTable;
 
 export function emptyHolds(): HoldsByTable {
   return { '1': [], '2': [] };
@@ -24,6 +25,10 @@ export function emptyHoldPasswords(): HoldPasswordsByTable {
 }
 
 export function emptyHoldExactEnds(): HoldExactEndsByTable {
+  return { '1': {}, '2': {} };
+}
+
+export function emptyHoldExactStarts(): HoldExactStartsByTable {
   return { '1': {}, '2': {} };
 }
 
@@ -75,6 +80,13 @@ export function parseHoldExactEndsFromDoc(data: Record<string, unknown> | undefi
   return { '1': exactEndMap(record['1']), '2': exactEndMap(record['2']) };
 }
 
+export function parseHoldExactStartsFromDoc(data: Record<string, unknown> | undefined): HoldExactStartsByTable {
+  const raw = data?.holdExactStarts;
+  if (!raw || typeof raw !== 'object') return emptyHoldExactStarts();
+  const record = raw as Record<string, unknown>;
+  return { '1': exactEndMap(record['1']), '2': exactEndMap(record['2']) };
+}
+
 export function holdNoteLabel(note: string): string {
   const text = note.trim();
   return text ? `（預留： ${text}）` : '預留時段';
@@ -98,7 +110,10 @@ export function mergeHoldSlotsWithNotes(
 }
 
 export type HoldBlockRange = {
+  /** 顯示用開始時間。由非整點開啟時是當下分鐘，例如 11:36。 */
   start: string;
+  /** 半小時格的開始，例如 11:30。 */
+  slotStart: string;
   /** 顯示用結束時間。提早結束時是當下分鐘，例如 19:37。 */
   end: string;
   /** 仍佔用的半小時格結束時間，例如 20:00。 */
@@ -113,6 +128,7 @@ export function mergeHoldBlocks(
   notes: Record<string, string>,
   passwords: Record<string, string>,
   exactEnds: Record<string, string>,
+  exactStarts: Record<string, string> = {},
 ): HoldBlockRange[] {
   const sorted = [...new Set(slots)].sort();
   const ranges: { start: string; end: string; note: string; password: string; lastSlot: string }[] = [];
@@ -129,7 +145,8 @@ export function mergeHoldBlocks(
     }
   }
   return ranges.map((range) => ({
-    start: range.start,
+    start: exactStarts[range.start] || range.start,
+    slotStart: range.start,
     end: exactEnds[range.lastSlot] || range.end,
     slotEnd: range.end,
     note: range.note,

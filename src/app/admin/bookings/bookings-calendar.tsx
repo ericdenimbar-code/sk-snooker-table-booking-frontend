@@ -29,7 +29,7 @@ import { cancelTemporaryAccessCode } from '@/app/(main)/temporary-access/actions
 import { cn } from '@/lib/utils';
 import { db, auth } from '@/lib/firebase';
 import { getAdminSlotPeriodHkt, getHktBookingStartUtc } from '@/lib/hkt-temp-segment';
-import { BLOCKED_SLOTS_COLLECTION, emptyHoldExactEnds, emptyHoldNotes, emptyHoldPasswords, emptyHolds, holdNoteLabel, mergeHoldBlocks, parseHoldExactEndsFromDoc, parseHoldNotesFromDoc, parseHoldPasswordsFromDoc, parseHoldsFromDoc, type HoldExactEndsByTable, type HoldNotesByTable, type HoldPasswordsByTable, type HoldsByTable } from '@/lib/blocked-slots';
+import { BLOCKED_SLOTS_COLLECTION, emptyHoldExactEnds, emptyHoldExactStarts, emptyHoldNotes, emptyHoldPasswords, emptyHolds, holdNoteLabel, mergeHoldBlocks, parseHoldExactEndsFromDoc, parseHoldExactStartsFromDoc, parseHoldNotesFromDoc, parseHoldPasswordsFromDoc, parseHoldsFromDoc, type HoldExactEndsByTable, type HoldExactStartsByTable, type HoldNotesByTable, type HoldPasswordsByTable, type HoldsByTable } from '@/lib/blocked-slots';
 import { useAdminFirestoreSession } from '@/lib/use-admin-firestore-session';
 import {
   getAdminDayWindow,
@@ -55,6 +55,7 @@ type HoldVisual = {
   date: string;
   startTime: string;
   endTime: string;
+  slotStart: string;
   slotEnd: string;
   note: string;
   password: string;
@@ -70,6 +71,7 @@ type BookingsCalendarProps = {
   initialHoldNotes?: HoldNotesByTable;
   initialHoldPasswords?: HoldPasswordsByTable;
   initialHoldExactEnds?: HoldExactEndsByTable;
+  initialHoldExactStarts?: HoldExactStartsByTable;
   initialHoldsDate?: string;
 };
 
@@ -88,7 +90,7 @@ function getHktAnchorDate(): Date {
   return new Date(y, mo - 1, d);
 }
 
-export function BookingsCalendar({ initialReservations, initialTempAccess, initialHolds = emptyHolds(), initialHoldNotes = emptyHoldNotes(), initialHoldPasswords = emptyHoldPasswords(), initialHoldExactEnds = emptyHoldExactEnds(), initialHoldsDate }: BookingsCalendarProps) {
+export function BookingsCalendar({ initialReservations, initialTempAccess, initialHolds = emptyHolds(), initialHoldNotes = emptyHoldNotes(), initialHoldPasswords = emptyHoldPasswords(), initialHoldExactEnds = emptyHoldExactEnds(), initialHoldExactStarts = emptyHoldExactStarts(), initialHoldsDate }: BookingsCalendarProps) {
   const { toast } = useToast();
   const firestoreSession = useAdminFirestoreSession();
   const permissionDeniedToastShownRef = useRef(false);
@@ -99,6 +101,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
   const [holdNotes, setHoldNotes] = useState<HoldNotesByTable>(initialHoldNotes);
   const [holdPasswords, setHoldPasswords] = useState<HoldPasswordsByTable>(initialHoldPasswords);
   const [holdExactEnds, setHoldExactEnds] = useState<HoldExactEndsByTable>(initialHoldExactEnds);
+  const [holdExactStarts, setHoldExactStarts] = useState<HoldExactStartsByTable>(initialHoldExactStarts);
   const [holdsDate, setHoldsDate] = useState(initialHoldsDate ?? '');
   const [selectedHold, setSelectedHold] = useState<HoldVisual | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<CombinedEvent | null>(null);
@@ -164,8 +167,9 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
     const notes = holdsDate === dayYmd ? holdNotes : emptyHoldNotes();
     const passwords = holdsDate === dayYmd ? holdPasswords : emptyHoldPasswords();
     const exactEnds = holdsDate === dayYmd ? holdExactEnds : emptyHoldExactEnds();
+    const exactStarts = holdsDate === dayYmd ? holdExactStarts : emptyHoldExactStarts();
     return (['1', '2'] as const).flatMap((roomId) =>
-      mergeHoldBlocks(source[roomId], notes[roomId], passwords[roomId], exactEnds[roomId]).flatMap((range) => {
+      mergeHoldBlocks(source[roomId], notes[roomId], passwords[roomId], exactEnds[roomId], exactStarts[roomId]).flatMap((range) => {
         try {
           const start = getHktBookingStartUtc(dayYmd, range.start);
           const end = getAdminSlotPeriodHkt(dayYmd, range.start, range.end).validUntil;
@@ -176,6 +180,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
             date: dayYmd,
             startTime: range.start,
             endTime: range.end,
+            slotStart: range.slotStart,
             slotEnd: range.slotEnd,
             note: range.note,
             password: range.password,
@@ -188,7 +193,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
         }
       }),
     );
-  }, [dayYmd, holds, holdNotes, holdPasswords, holdExactEnds, holdsDate]);
+  }, [dayYmd, holds, holdNotes, holdPasswords, holdExactEnds, holdExactStarts, holdsDate]);
 
   const getEventsForDay = useCallback((day: Date, filter: 'room1' | 'room2' | 'door') => {
     
@@ -219,6 +224,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
       setHoldNotes(result.holdNotes ?? emptyHoldNotes());
       setHoldPasswords(result.holdPasswords ?? emptyHoldPasswords());
       setHoldExactEnds(result.holdExactEnds ?? emptyHoldExactEnds());
+      setHoldExactStarts(result.holdExactStarts ?? emptyHoldExactStarts());
       setHoldsDate(dayYmd);
     });
     const unsubscribe = onSnapshot(
@@ -230,6 +236,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
         setHoldNotes(parseHoldNotesFromDoc(data));
         setHoldPasswords(parseHoldPasswordsFromDoc(data));
         setHoldExactEnds(parseHoldExactEndsFromDoc(data));
+        setHoldExactStarts(parseHoldExactStartsFromDoc(data));
         setHoldsDate(dayYmd);
       },
       (error) => {
@@ -549,6 +556,7 @@ export function BookingsCalendar({ initialReservations, initialTempAccess, initi
           setHoldNotes(current.holdNotes);
           if (current.holdPasswords) setHoldPasswords(current.holdPasswords);
           if (current.holdExactEnds) setHoldExactEnds(current.holdExactEnds);
+          if (current.holdExactStarts) setHoldExactStarts(current.holdExactStarts);
           setHoldsDate(dayYmd);
         }}
       />
@@ -621,7 +629,7 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
   block: HoldVisual | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSaved: (days: { date: string; holds: HoldsByTable; holdNotes: HoldNotesByTable; holdPasswords?: HoldPasswordsByTable; holdExactEnds?: HoldExactEndsByTable }[]) => void;
+  onSaved: (days: { date: string; holds: HoldsByTable; holdNotes: HoldNotesByTable; holdPasswords?: HoldPasswordsByTable; holdExactEnds?: HoldExactEndsByTable; holdExactStarts?: HoldExactStartsByTable }[]) => void;
 }) => {
   const { toast } = useToast();
   const [roomId, setRoomId] = useState<'1' | '2'>('1');
@@ -635,7 +643,7 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
   useEffect(() => {
     if (!open || !block) return;
     setRoomId(block.roomId);
-    setStartTime(block.startTime);
+    setStartTime(block.slotStart);
     setEndTime(block.slotEnd);
     setNote(block.note);
     setErrorMessage('');
@@ -664,7 +672,7 @@ const EditHoldDialog = ({ block, open, onOpenChange, onSaved }: {
         adminUserId,
         date: block.date,
         fromTable: block.roomId,
-        fromStart: block.startTime,
+        fromStart: block.slotStart,
         fromEnd: block.slotEnd,
         toTable: nextRoomId,
         toStart: nextStart,

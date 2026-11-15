@@ -4,7 +4,7 @@ import { Terminal } from "lucide-react";
 import { formatInTimeZone } from "date-fns-tz";
 import { db } from "@/lib/firebase-admin";
 import { getAdminBookingsInitialData } from "@/app/admin/bookings/actions";
-import { BLOCKED_SLOTS_COLLECTION, emptyHoldExactEnds, emptyHoldNotes, emptyHoldPasswords, emptyHolds, HKT, parseHoldExactEndsFromDoc, parseHoldNotesFromDoc, parseHoldPasswordsFromDoc, parseHoldsFromDoc, type HoldExactEndsByTable, type HoldNotesByTable, type HoldPasswordsByTable, type HoldsByTable } from "@/lib/blocked-slots";
+import { BLOCKED_SLOTS_COLLECTION, emptyHoldExactEnds, emptyHoldExactStarts, emptyHoldNotes, emptyHoldPasswords, emptyHolds, HKT, parseHoldExactEndsFromDoc, parseHoldExactStartsFromDoc, parseHoldNotesFromDoc, parseHoldPasswordsFromDoc, parseHoldsFromDoc, type HoldExactEndsByTable, type HoldExactStartsByTable, type HoldNotesByTable, type HoldPasswordsByTable, type HoldsByTable } from "@/lib/blocked-slots";
 import { BookingsCalendar } from "./bookings-calendar";
 
 export default async function BookingsPage() {
@@ -32,6 +32,7 @@ export default async function BookingsPage() {
   let initialHoldNotes: HoldNotesByTable = emptyHoldNotes();
   let initialHoldPasswords: HoldPasswordsByTable = emptyHoldPasswords();
   let initialHoldExactEnds: HoldExactEndsByTable = emptyHoldExactEnds();
+  let initialHoldExactStarts: HoldExactStartsByTable = emptyHoldExactStarts();
   try {
     const holdDoc = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(todayHkt).get();
     const holdData = holdDoc.exists ? holdDoc.data() as Record<string, unknown> | undefined : undefined;
@@ -39,6 +40,7 @@ export default async function BookingsPage() {
     initialHoldNotes = parseHoldNotesFromDoc(holdData);
     initialHoldPasswords = parseHoldPasswordsFromDoc(holdData);
     initialHoldExactEnds = parseHoldExactEndsFromDoc(holdData);
+    initialHoldExactStarts = parseHoldExactStartsFromDoc(holdData);
   } catch (err) {
     console.error('[admin/bookings] Failed to load blockedSlots:', err);
   }
@@ -66,6 +68,7 @@ export default async function BookingsPage() {
                   initialHoldNotes={initialHoldNotes}
                   initialHoldPasswords={initialHoldPasswords}
                   initialHoldExactEnds={initialHoldExactEnds}
+                  initialHoldExactStarts={initialHoldExactStarts}
                   initialHoldsDate={todayHkt}
                 />
             </CardContent>

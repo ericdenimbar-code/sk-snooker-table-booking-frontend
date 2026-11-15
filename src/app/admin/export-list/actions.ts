@@ -2,7 +2,7 @@
 
 import { db } from '@/lib/firebase-admin';
 import { getRoomSettings } from '@/app/admin/settings/actions';
-import { BLOCKED_SLOTS_COLLECTION, expandBookingToHalfHourKeys, holdNoteLabel, mergeHoldBlocks, parseHoldExactEndsFromDoc, parseHoldNotesFromDoc, parseHoldPasswordsFromDoc, parseHoldsFromDoc } from '@/lib/blocked-slots';
+import { BLOCKED_SLOTS_COLLECTION, expandBookingToHalfHourKeys, holdNoteLabel, mergeHoldBlocks, parseHoldExactEndsFromDoc, parseHoldExactStartsFromDoc, parseHoldNotesFromDoc, parseHoldPasswordsFromDoc, parseHoldsFromDoc } from '@/lib/blocked-slots';
 import type { Reservation } from '@/types';
 import { addDays, eachDayOfInterval, endOfMonth, format, parseISO, startOfMonth } from 'date-fns';
 import * as XLSX from 'xlsx';
@@ -108,6 +108,7 @@ async function holdRowsForMonth(startStr: string, endStr: string) {
       notes: parseHoldNotesFromDoc(data),
       passwords: parseHoldPasswordsFromDoc(data),
       exactEnds: parseHoldExactEndsFromDoc(data),
+      exactStarts: parseHoldExactStartsFromDoc(data),
     }] as const;
   }));
 
@@ -118,7 +119,7 @@ async function holdRowsForMonth(startStr: string, endStr: string) {
     const record = byDate.get(date);
     if (!record) continue;
     for (const table of ['1', '2'] as const) {
-      for (const range of mergeHoldBlocks(record.holds[table], record.notes[table], record.passwords[table], record.exactEnds[table])) {
+      for (const range of mergeHoldBlocks(record.holds[table], record.notes[table], record.passwords[table], record.exactEnds[table], record.exactStarts[table])) {
         ranges.push({ date, ...range, table });
       }
     }

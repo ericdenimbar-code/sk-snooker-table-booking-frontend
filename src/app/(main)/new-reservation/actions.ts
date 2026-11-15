@@ -26,6 +26,7 @@ import admin from 'firebase-admin';
 import {
   BLOCKED_SLOTS_COLLECTION,
   emptyHoldExactEnds,
+  emptyHoldExactStarts,
   emptyHoldPasswords,
   emptyHolds,
   expandBookingToHalfHourKeys,
@@ -36,10 +37,12 @@ import {
   isValidHalfHourSlot,
   mergeHoldSlotsWithNotes,
   parseHoldExactEndsFromDoc,
+  parseHoldExactStartsFromDoc,
   parseHoldNotesFromDoc,
   parseHoldPasswordsFromDoc,
   parseHoldsFromDoc,
   type HoldExactEndsByTable,
+  type HoldExactStartsByTable,
   type HoldNotesByTable,
   type HoldPasswordsByTable,
   type HoldTable,
@@ -127,6 +130,7 @@ export async function getBlockedSlotsForDate(date: string): Promise<ServerAction
     holdNotes?: HoldNotesByTable;
     holdPasswords?: HoldPasswordsByTable;
     holdExactEnds?: HoldExactEndsByTable;
+    holdExactStarts?: HoldExactStartsByTable;
     slots?: string[];
 }> {
     if (!db) return { success: false, error: '後端資料庫未連接。' };
@@ -138,13 +142,14 @@ export async function getBlockedSlotsForDate(date: string): Promise<ServerAction
         const holdNotes = parseHoldNotesFromDoc(data);
         let holdPasswords = parseHoldPasswordsFromDoc(data);
         const holdExactEnds = parseHoldExactEndsFromDoc(data);
+        const holdExactStarts = parseHoldExactStartsFromDoc(data);
         if (heldSlotsMissingPassword(holds, holdPasswords)) {
             const used = new Set<string>([...Object.values(holdPasswords['1']), ...Object.values(holdPasswords['2'])]);
             holdPasswords = assignHoldPasswords(holds, holdNotes, holdPasswords, used);
             await ref.set({ holdPasswords }, { merge: true });
         }
         const slots = [...new Set([...holds['1'], ...holds['2']])];
-        return { success: true, holds, holdNotes, holdPasswords, holdExactEnds, slots };
+        return { success: true, holds, holdNotes, holdPasswords, holdExactEnds, holdExactStarts, slots };
     } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         return { success: false, error: `讀取預留時段失敗: ${msg}` };
@@ -264,10 +269,12 @@ async function writeBlockedSlotChanges(
         const slots = [...new Set([...next['1'], ...next['2']])].sort();
         const notes = parseHoldNotesFromDoc(data);
         const exactEnds = parseHoldExactEndsFromDoc(data);
+        const exactStarts = parseHoldExactStartsFromDoc(data);
         for (const table of ['1', '2'] as const) {
             for (const item of toRemove) {
                 if (item.table !== table) continue;
                 delete exactEnds[table][item.time];
+                delete exactStarts[table][item.time];
             }
         }
         const used = new Set<string>([
@@ -275,7 +282,7 @@ async function writeBlockedSlotChanges(
             ...Object.values(parseHoldPasswordsFromDoc(data)['2']),
         ]);
         const holdPasswords = assignHoldPasswords(next, notes, parseHoldPasswordsFromDoc(data), used);
-        batch.set(ref, { holds: next, slots, holdPasswords, holdExactEnds: exactEnds }, { merge: true });
+        batch.set(ref, { holds: next, slots, holdPasswords, holdExactEnds: exactEnds, holdExactStarts: exactStarts }, { merge: true });
         hasWrites = true;
 
         const storedEvents = data?.doorHoldEvents;
@@ -501,18 +508,41 @@ export async function updateHoldBlock(params: {
         const notes = parseHoldNotesFromDoc(freshData);
         const passwords = parseHoldPasswordsFromDoc(freshData);
         const exactEnds = parseHoldExactEndsFromDoc(freshData);
+        const exactStarts = parseHoldExactStartsFromDoc(freshData);
+        const orderedOld = [...oldKeys].sort((a, b) => slotKey(a.date, a.time).localeCompare(slotKey(b.date, b.time)));
+        const orderedNew = [...newKeys].sort((a, b) => slotKey(a.date, a.time).localeCompare(slotKey(b.date, b.time)));
+        const carriedStart = orderedOld[0] ? exactStarts[params.fromTable][orderedOld[0].time] : undefined;
         for (const slot of oldKeys.filter((item) => item.date === date)) {
             delete notes[params.fromTable][slot.time];
             delete passwords[params.fromTable][slot.time];
-            if (!sameRange) delete exactEnds[params.fromTable][slot.time];
+            if (!sameRange) {
+                delete exactEnds[params.fromTable][slot.time];
+                delete exactStarts[params.fromTable][slot.time];
+            }
         }
         for (const slot of newKeys.filter((item) => item.date === date)) {
             if (note) notes[params.toTable][slot.time] = note;
             else delete notes[params.toTable][slot.time];
             passwords[params.toTable][slot.time] = password;
-            if (!sameRange) delete exactEnds[params.toTable][slot.time];
+            if (!sameRange) {
+                delete exactEnds[params.toTable][slot.time];
+                delete exactStarts[params.toTable][slot.time];
+            }
         }
-        await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).set({ holdNotes: notes, holdPasswords: passwords, holdExactEnds: exactEnds }, { merge: true });
+        const newFirst = orderedNew[0];
+        const oldFirst = orderedOld[0];
+        if (
+            carriedStart
+            && newFirst
+            && oldFirst
+            && newFirst.date === date
+            && params.fromTable === params.toTable
+            && newFirst.date === oldFirst.date
+            && newFirst.time === oldFirst.time
+        ) {
+            exactStarts[params.toTable][newFirst.time] = carriedStart;
+        }
+        await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).set({ holdNotes: notes, holdPasswords: passwords, holdExactEnds: exactEnds, holdExactStarts: exactStarts }, { merge: true });
     }
 
     const descriptionWarning = await refreshHoldDescriptions(dates);
@@ -528,8 +558,11 @@ export async function updateHoldBlock(params: {
             holdNotes: parseHoldNotesFromDoc(data),
             holdPasswords: parseHoldPasswordsFromDoc(data),
             holdExactEnds: parseHoldExactEndsFromDoc(data),
+            holdExactStarts: parseHoldExactStartsFromDoc(data),
         });
     }
+    const alignWarning = await alignHoldCalendarExactTimes(dates);
+    if (alignWarning) calendarWarning = calendarWarning ?? alignWarning;
     revalidatePath('/new-reservation', 'page');
     revalidatePath('/admin/bookings', 'page');
     return calendarWarning ? { success: true, calendarWarning, days } : { success: true, days };
@@ -638,7 +671,7 @@ const CLOSEDOOR_LOCK_MS = 15 * 60 * 1000;
 const CLOSEDOOR_MAX_FAILURES = 10;
 
 export type CloseHoldResult =
-    | { status: 'ok'; table: HoldTable; closedAt: string; releasedFrom: string | null; releasedUntil: string | null; calendarWarning?: string }
+    | { status: 'ok'; table: HoldTable; both?: boolean; closedAt: string; releasedFrom: string | null; releasedUntil: string | null; calendarWarning?: string }
     | { status: 'invalid' | 'locked' | 'not-started' | 'ended' | 'failed'; error?: string };
 
 function hktSlotMs(date: string, time: string): number {
@@ -725,9 +758,10 @@ function describeHold(slots: HoldSlotRef[], docs: Map<string, Record<string, unk
     const first = ordered[0];
     const last = ordered[ordered.length - 1];
     const exact = parseHoldExactEndsFromDoc(docs.get(last.date))[last.table][last.time];
+    const exactStart = parseHoldExactStartsFromDoc(docs.get(first.date))[first.table][first.time];
     const endHm = exact || halfHourEndHm(last.time);
     const endDate = !exact && endHm === '00:00' ? format(addDays(parseISO(last.date), 1), 'yyyy-MM-dd') : last.date;
-    const startMs = hktSlotMs(first.date, first.time);
+    const startMs = hktSlotMs(first.date, exactStart || first.time);
     const endMs = hktSlotMs(endDate, endHm === '00:00' && !exact ? '00:00' : endHm);
     if (nowMs < startMs) return { kind: 'future' };
     if (nowMs >= endMs) return { kind: 'ended' };
@@ -770,7 +804,8 @@ async function applyHoldClose(active: ActiveHold, now: Date, dates: string[]): P
         );
         const event = events.find((item) => expandHalfHoursUntil(item.start, item.end).includes(last.time));
         if (event) {
-            const period = getAdminSlotPeriodHkt(last.date, event.start, halfHourEndHm(last.time));
+            const exactStart = parseHoldExactStartsFromDoc(eventData)[last.table][event.start];
+            const period = getAdminSlotPeriodHkt(last.date, exactStart || event.start, halfHourEndHm(last.time));
             const patched = await patchHoldEventEnd(last.table, event.eventKey, period.validFrom.toISOString(), now.toISOString());
             if (patched) calendarWarning = calendarWarning ?? patched;
         } else if (!calendarWarning) {
@@ -792,6 +827,35 @@ export async function closeHoldByPasscode(passcode: string): Promise<CloseHoldRe
     const guard = await guardRef.get();
     const lockedUntil = typeof guard.data()?.lockedUntilMs === 'number' ? guard.data()?.lockedUntilMs as number : 0;
     if (lockedUntil > Date.now()) return { status: 'locked' };
+
+    const controls = await db.collection(FACILITY_CONTROLS).doc('current').get();
+    const allOffPassword = controls.data()?.allOffPassword;
+    if (typeof allOffPassword === 'string' && allOffPassword === passcode) {
+        const now = new Date();
+        const closedTables: HoldTable[] = [];
+        let calendarWarning: string | undefined;
+        for (const table of ['1', '2'] as const) {
+            const closed = await closeActiveHoldsForTable(table, now);
+            if (closed.status === 'failed') return closed;
+            if (closed.status === 'ok') closedTables.push(table);
+            calendarWarning = calendarWarning ?? closed.calendarWarning;
+        }
+        if (closedTables.length === 0) return { status: 'ended' };
+        await guardRef.set({ failedAttempts: 0, lockedUntilMs: 0 }, { merge: true });
+        const regenerated = await regenerateFacilityPasswords();
+        revalidatePath('/new-reservation', 'page');
+        revalidatePath('/admin/bookings', 'page');
+        revalidatePath('/admin/facility-shutdown', 'page');
+        return {
+            status: 'ok',
+            table: closedTables[0],
+            both: closedTables.length === 2,
+            closedAt: formatInTimeZone(now, HKT, 'HH:mm'),
+            releasedFrom: null,
+            releasedUntil: null,
+            calendarWarning: calendarWarning ?? regenerated.warning,
+        };
+    }
 
     const now = new Date();
     const loaded = await readNearbyHoldDocs(now);
@@ -821,21 +885,21 @@ export async function closeHoldByPasscode(passcode: string): Promise<CloseHoldRe
     if (applied.error) return { status: 'failed', error: applied.error };
 
     await guardRef.set({ failedAttempts: 0, lockedUntilMs: 0 }, { merge: true });
+    const regenerated = await regenerateFacilityPasswords();
     revalidatePath('/new-reservation', 'page');
     revalidatePath('/admin/bookings', 'page');
+    revalidatePath('/admin/facility-shutdown', 'page');
     return {
         status: 'ok',
         table: active.table,
         closedAt: formatInTimeZone(now, HKT, 'HH:mm'),
         releasedFrom: applied.releasedFrom,
         releasedUntil: applied.releasedUntil,
-        calendarWarning: applied.calendarWarning,
+        calendarWarning: applied.calendarWarning ?? regenerated.warning,
     };
 }
 
-export async function closeActiveHoldForAdmin(adminUserId: string, table: HoldTable, now = new Date()): Promise<CloseHoldResult> {
-    const authError = await assertAdminUser(adminUserId);
-    if (authError) return { status: 'failed', error: authError };
+async function closeActiveHoldsForTable(table: HoldTable, now = new Date()): Promise<CloseHoldResult> {
     const loaded = await readNearbyHoldDocs(now);
     if (!loaded) return { status: 'failed', error: '後端資料庫未連接。' };
 
@@ -863,6 +927,7 @@ export async function closeActiveHoldForAdmin(adminUserId: string, table: HoldTa
     }
     revalidatePath('/new-reservation', 'page');
     revalidatePath('/admin/bookings', 'page');
+    revalidatePath('/admin/facility-shutdown', 'page');
     return {
         status: 'ok',
         table,
@@ -871,6 +936,12 @@ export async function closeActiveHoldForAdmin(adminUserId: string, table: HoldTa
         releasedUntil,
         calendarWarning,
     };
+}
+
+export async function closeActiveHoldForAdmin(adminUserId: string, table: HoldTable, now = new Date()): Promise<CloseHoldResult> {
+    const authError = await assertAdminUser(adminUserId);
+    if (authError) return { status: 'failed', error: authError };
+    return closeActiveHoldsForTable(table, now);
 }
 
 async function noteClosedoorFailure(failedAttempts: unknown) {
@@ -965,7 +1036,210 @@ async function syncReservedSlotsToHoldCalendars(
         }
     }
 
+    const alignedDates = [...eventsByDate.keys()];
+    const alignWarning = await alignHoldCalendarExactTimes(alignedDates);
+    if (alignWarning) warnings.push(alignWarning);
     return warnings.length > 0 ? `預留時段已更新，但日曆同步未完成：${warnings[0]}` : null;
+}
+
+async function alignHoldCalendarExactTimes(dates: string[]): Promise<string | null> {
+    if (!db) return null;
+    for (const date of dates) {
+        const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+        const data = snap.data() as Record<string, unknown> | undefined;
+        const starts = parseHoldExactStartsFromDoc(data);
+        const ends = parseHoldExactEndsFromDoc(data);
+        const stored = data?.doorHoldEvents;
+        for (const table of ['1', '2'] as const) {
+            const events = parseDoorMultiEvents(
+                stored && typeof stored === 'object' ? (stored as Record<string, unknown>)[table] : undefined,
+            );
+            for (const event of events) {
+                const slots = expandHalfHoursUntil(event.start, event.end);
+                const first = slots[0];
+                const last = slots[slots.length - 1];
+                if (!first || !last) continue;
+                const startHm = starts[table][first] || event.start;
+                const endHm = ends[table][last] || event.end;
+                if (startHm === event.start && endHm === event.end) continue;
+                const period = getAdminSlotPeriodHkt(date, startHm, endHm);
+                const patched = await patchHoldEventEnd(table, event.eventKey, period.validFrom.toISOString(), period.validUntil.toISOString());
+                if (patched) return patched;
+            }
+        }
+    }
+    return null;
+}
+
+const FACILITY_CONTROLS = 'facilityControls';
+
+export type FacilityPasswordSet = {
+    openPasswords: { '1': string; '2': string };
+    allOffPassword: string;
+    warning?: string;
+};
+
+function unusedPasscode(used: Set<string>): string {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+        const code = String(randomInt(0, 10000)).padStart(4, '0');
+        if (!used.has(code)) {
+            used.add(code);
+            return code;
+        }
+    }
+    const fallback = String(randomInt(0, 10000)).padStart(4, '0');
+    used.add(fallback);
+    return fallback;
+}
+
+function splitSlotRuns<T extends { date: string; time: string }>(slots: T[]): T[][] {
+    const ordered = [...slots].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+    const runs: T[][] = [];
+    let current: T[] = [];
+    const follows = (prev: T, slot: T) => {
+        const end = halfHourEndHm(prev.time);
+        if (end === '00:00') return slot.time === '00:00' && slot.date === format(addDays(parseISO(prev.date), 1), 'yyyy-MM-dd');
+        return prev.date === slot.date && slot.time === end;
+    };
+    for (const slot of ordered) {
+        const prev = current[current.length - 1];
+        if (!prev || follows(prev, slot)) current.push(slot);
+        else {
+            runs.push(current);
+            current = [slot];
+        }
+    }
+    if (current.length > 0) runs.push(current);
+    return runs;
+}
+
+async function resyncHoldPasswordEvents(dates: string[]): Promise<string | null> {
+    if (!db || dates.length === 0) return null;
+    const plans: { date: string; table: HoldTable; existingEvents: DoorMultiEventRecord[]; toAdd: string[]; toRemove: string[]; storedEvents: { '1': DoorMultiEventRecord[]; '2': DoorMultiEventRecord[] } }[] = [];
+    for (const date of dates) {
+        const snap = await db.collection(BLOCKED_SLOTS_COLLECTION).doc(date).get();
+        const data = snap.data() as Record<string, unknown> | undefined;
+        const stored = data?.doorHoldEvents;
+        const holds = parseHoldsFromDoc(data);
+        const storedEvents = {
+            '1': parseDoorMultiEvents(stored && typeof stored === 'object' ? (stored as Record<string, unknown>)['1'] : undefined),
+            '2': parseDoorMultiEvents(stored && typeof stored === 'object' ? (stored as Record<string, unknown>)['2'] : undefined),
+        };
+        for (const table of ['1', '2'] as const) {
+            if (storedEvents[table].length === 0 && holds[table].length === 0) continue;
+            plans.push({
+                date,
+                table,
+                existingEvents: storedEvents[table],
+                toAdd: storedEvents[table].length === 0 ? holds[table] : [],
+                toRemove: [],
+                storedEvents,
+            });
+        }
+    }
+    return syncReservedSlotsToHoldCalendars(plans);
+}
+
+export async function regenerateFacilityPasswords(): Promise<FacilityPasswordSet> {
+    const empty = { openPasswords: { '1': '0000', '2': '0000' } as { '1': string; '2': string }, allOffPassword: '0000' };
+    if (!db) return empty;
+    const snaps = await db.collection(BLOCKED_SLOTS_COLLECTION).get();
+    type Slot = { date: string; time: string; table: HoldTable };
+    const groups = new Map<string, Slot[]>();
+    snaps.docs.forEach((snap) => {
+        const data = snap.data() as Record<string, unknown>;
+        const holds = parseHoldsFromDoc(data);
+        const passwords = parseHoldPasswordsFromDoc(data);
+        for (const table of ['1', '2'] as const) {
+            for (const time of holds[table]) {
+                const key = `${table}|${passwords[table][time] || 'nopw'}`;
+                const list = groups.get(key) ?? [];
+                list.push({ date: snap.id, time, table });
+                groups.set(key, list);
+            }
+        }
+    });
+    const used = new Set<string>();
+    const nextPassword = new Map<string, string>();
+    for (const group of groups.values()) {
+        for (const run of splitSlotRuns(group)) {
+            const password = unusedPasscode(used);
+            for (const slot of run) nextPassword.set(`${slot.date}|${slot.table}|${slot.time}`, password);
+        }
+    }
+    const openPasswords = { '1': unusedPasscode(used), '2': unusedPasscode(used) };
+    const allOffPassword = unusedPasscode(used);
+    let batch = db.batch();
+    let writes = 0;
+    const changedDates: string[] = [];
+    const commitBatch = async () => {
+        if (writes === 0) return;
+        await batch.commit();
+        batch = db!.batch();
+        writes = 0;
+    };
+    for (const snap of snaps.docs) {
+        const holds = parseHoldsFromDoc(snap.data() as Record<string, unknown>);
+        if (holds['1'].length === 0 && holds['2'].length === 0) continue;
+        const passwords = emptyHoldPasswords();
+        for (const table of ['1', '2'] as const) {
+            for (const time of holds[table]) {
+                const password = nextPassword.get(`${snap.id}|${table}|${time}`);
+                if (password) passwords[table][time] = password;
+            }
+        }
+        batch.set(snap.ref, { holdPasswords: passwords }, { merge: true });
+        changedDates.push(snap.id);
+        writes += 1;
+        if (writes >= 400) await commitBatch();
+    }
+    batch.set(db.collection(FACILITY_CONTROLS).doc('current'), { openPasswords, allOffPassword }, { merge: true });
+    writes += 1;
+    await commitBatch();
+    const warning = await resyncHoldPasswordEvents(changedDates);
+    revalidatePath('/admin/bookings', 'page');
+    revalidatePath('/admin/facility-shutdown', 'page');
+    revalidatePath('/new-reservation', 'page');
+    return warning ? { openPasswords, allOffPassword, warning: warning ?? undefined } : { openPasswords, allOffPassword };
+}
+
+export async function readFacilityPasswords(): Promise<FacilityPasswordSet> {
+    if (!db) return { openPasswords: { '1': '', '2': '' }, allOffPassword: '' };
+    const snap = await db.collection(FACILITY_CONTROLS).doc('current').get();
+    const data = snap.data() ?? {};
+    const open = data.openPasswords && typeof data.openPasswords === 'object' ? data.openPasswords as Record<string, unknown> : {};
+    const first = typeof open['1'] === 'string' && /^\d{4}$/.test(open['1']) ? open['1'] : '';
+    const second = typeof open['2'] === 'string' && /^\d{4}$/.test(open['2']) ? open['2'] : '';
+    const allOff = typeof data.allOffPassword === 'string' && /^\d{4}$/.test(data.allOffPassword) ? data.allOffPassword : '';
+    if (first && second && allOff) return { openPasswords: { '1': first, '2': second }, allOffPassword: allOff };
+    const used = new Set<string>([first, second, allOff].filter(Boolean));
+    const openPasswords = { '1': first || unusedPasscode(used), '2': second || unusedPasscode(used) };
+    const allOffPassword = allOff || unusedPasscode(used);
+    await db.collection(FACILITY_CONTROLS).doc('current').set({ openPasswords, allOffPassword }, { merge: true });
+    return { openPasswords, allOffPassword };
+}
+
+export async function listActiveHoldPanels(): Promise<{ table: HoldTable; start: string; end: string; password: string }[]> {
+    const now = new Date();
+    const loaded = await readNearbyHoldDocs(now);
+    if (!loaded) return [];
+    const panels: { table: HoldTable; start: string; end: string; password: string }[] = [];
+    for (const [, slots] of collectHoldGroups(loaded.docs, loaded.dates)) {
+        for (const run of contiguousHoldRuns(slots)) {
+            const described = describeHold(run, loaded.docs, now.getTime());
+            if (described.kind !== 'active') continue;
+            const first = described.hold.slots[0];
+            const exactStart = parseHoldExactStartsFromDoc(loaded.docs.get(first.date))[first.table][first.time];
+            const password = parseHoldPasswordsFromDoc(loaded.docs.get(first.date))[first.table][first.time] || '';
+            panels.push({
+                table: first.table,
+                start: exactStart || first.time,
+                end: described.hold.endLabel,
+                password,
+            });
+        }
+    }
+    return panels;
 }
 
 export async function blockSlots(
